@@ -403,13 +403,19 @@ end
 
 local SAVE_DIR = SCRIPT_DIR .. PATH_SEP .. 'MikzDrift' .. PATH_SEP .. 'presets'
 
--- Ensure save directory exists
+-- Whether file I/O is available in this environment (Lexis may sandbox it)
+local FILE_IO_AVAILABLE = true
+
+-- Ensure save directory exists (fails gracefully if sandboxed)
 local function ensureSaveDir()
-    if PATH_SEP == '\\' then
-        os.execute('mkdir "' .. SAVE_DIR .. '" 2>nul')
-    else
-        os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
-    end
+    local ok = pcall(function()
+        if PATH_SEP == '\\' then
+            os.execute('mkdir "' .. SAVE_DIR .. '" 2>nul')
+        else
+            os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
+        end
+    end)
+    if not ok then FILE_IO_AVAILABLE = false end
 end
 
 -- Serialize a preset table to a saveable string
@@ -423,7 +429,6 @@ local function serializePreset(preset)
     table.insert(lines, string.format('  assistAngleMax = %.1f,', preset.assistAngleMax or 80.0))
     table.insert(lines, '  mult = {')
     if preset.mult then
-        -- Sort keys for consistent file output
         local keys = {}
         for k in pairs(preset.mult) do table.insert(keys, k) end
         table.sort(keys)
@@ -446,14 +451,17 @@ local function serializePreset(preset)
     return table.concat(lines, '\n')
 end
 
--- Save a preset to a .lua file
+-- Save a preset to a .lua file (fails gracefully if sandboxed)
 local function savePresetToFile(preset)
+    if not FILE_IO_AVAILABLE then
+        notify.push('MikzDrift', 'File I/O not available - preset saved in memory only')
+        return false
+    end
     ensureSaveDir()
-    -- Sanitize filename: only alphanumeric and underscores
     local filename = preset.name:gsub('[^%w ]', ''):gsub(' ', '_')
     local path = SAVE_DIR .. PATH_SEP .. filename .. '.lua'
-    local f = io.open(path, 'w')
-    if not f then
+    local ok, f = pcall(io.open, path, 'w')
+    if not ok or not f then
         notify.push('MikzDrift', 'Failed to save: could not write file')
         return false
     end
@@ -466,19 +474,17 @@ end
 
 -- Load a single preset from a .lua file
 local function loadPresetFromFile(path)
-    local fn, err = loadfile(path)
-    if not fn then
-        return nil, err
+    local ok, fn_or_err = pcall(loadfile, path)
+    if not ok or not fn_or_err then
+        return nil, tostring(fn_or_err)
     end
-    local ok, result = pcall(fn)
-    if not ok or type(result) ~= 'table' then
+    local ok2, result = pcall(fn_or_err)
+    if not ok2 or type(result) ~= 'table' then
         return nil, 'Invalid preset file: ' .. tostring(result)
     end
-    -- Validate required fields
     if not result.name or not result.mult then
         return nil, 'Missing name or mult table'
     end
-    -- Ensure set table exists
     if not result.set then
         result.set = { driveBiasFront = 0.0 }
     end
@@ -488,22 +494,27 @@ end
 
 -- List all .lua files in the presets folder
 local function listPresetFiles()
+    if not FILE_IO_AVAILABLE then return {} end
     ensureSaveDir()
     local files = {}
-    local cmd
-    if PATH_SEP == '\\' then
-        cmd = 'dir "' .. SAVE_DIR .. '\\*.lua" /b 2>nul'
-    else
-        cmd = 'ls -1 "' .. SAVE_DIR .. '/" 2>/dev/null | grep "\\.lua$"'
-    end
-    local handle = io.popen(cmd)
-    if handle then
-        for line in handle:lines() do
-            if line:match('%.lua$') then
-                table.insert(files, line)
-            end
+    local ok, handle = pcall(function()
+        local cmd
+        if PATH_SEP == '\\' then
+            cmd = 'dir "' .. SAVE_DIR .. '\\*.lua" /b 2>nul'
+        else
+            cmd = 'ls -1 "' .. SAVE_DIR .. '/" 2>/dev/null | grep "\\.lua$"'
         end
-        handle:close()
+        return io.popen(cmd)
+    end)
+    if ok and handle then
+        local readOk = pcall(function()
+            for line in handle:lines() do
+                if line:match('%.lua$') then
+                    table.insert(files, line)
+                end
+            end
+        end)
+        pcall(function() handle:close() end)
     end
     return files
 end
@@ -524,9 +535,11 @@ end
 
 -- Delete a preset file by name
 local function deletePresetFile(presetName)
+    if not FILE_IO_AVAILABLE then return false end
     local filename = presetName:gsub('[^%w ]', ''):gsub(' ', '_')
     local path = SAVE_DIR .. PATH_SEP .. filename .. '.lua'
-    return os.remove(path)
+    local ok = pcall(os.remove, path)
+    return ok
 end
 
 -- Number of built-in presets (used to tell built-in from custom)
@@ -534,11 +547,9 @@ local BUILTIN_COUNT = #PRESETS
 
 -- Load saved custom presets and append to PRESETS
 local function reloadCustomPresets()
-    -- Remove old custom presets (keep only built-ins)
     while #PRESETS > BUILTIN_COUNT do
         table.remove(PRESETS)
     end
-    -- Load from disk and append
     local customs = loadAllCustomPresets()
     for _, p in ipairs(customs) do
         table.insert(PRESETS, p)
@@ -546,7 +557,17 @@ local function reloadCustomPresets()
     return #customs
 end
 
--- Initial load
+-- Detect if file I/O works (test on startup)
+do
+    local ok = pcall(function()
+        ensureSaveDir()
+    end)
+    if not ok then
+        FILE_IO_AVAILABLE = false
+    end
+end
+
+-- Initial load (safe — returns 0 if file I/O is unavailable)
 reloadCustomPresets()
 
 -- ============================================================
@@ -2162,12 +2183,18 @@ end
 manageMenu:button('Open Presets Folder')
     :tooltip('Open the MikzDrift presets folder in Explorer')
     :event(menu.event.click, function()
-        ensureSaveDir()
-        if PATH_SEP == '\\' then
-            os.execute('explorer "' .. SAVE_DIR .. '"')
-        else
-            os.execute('xdg-open "' .. SAVE_DIR .. '" &')
+        if not FILE_IO_AVAILABLE then
+            notify.push('MikzDrift', 'File I/O not available in this environment')
+            return
         end
+        ensureSaveDir()
+        pcall(function()
+            if PATH_SEP == '\\' then
+                os.execute('explorer "' .. SAVE_DIR .. '"')
+            else
+                os.execute('xdg-open "' .. SAVE_DIR .. '" &')
+            end
+        end)
     end)
 
 -- ---- Main toggles ----

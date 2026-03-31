@@ -369,6 +369,149 @@ local PRESETS = {
 }
 
 -- ============================================================
+-- CUSTOM PRESET FILE I/O
+-- Saves/loads .lua preset files in scripts/MikzDrift/presets/
+-- ============================================================
+
+local SAVE_DIR = this.dir() .. '\\MikzDrift\\presets'
+
+-- Ensure save directory exists
+local function ensureSaveDir()
+    os.execute('mkdir "' .. SAVE_DIR .. '" 2>nul')
+end
+
+-- Serialize a preset table to a saveable string
+local function serializePreset(preset)
+    local lines = {}
+    table.insert(lines, 'return {')
+    table.insert(lines, string.format('  name = %q,', preset.name))
+    table.insert(lines, string.format('  desc = %q,', preset.desc or 'Custom preset'))
+    table.insert(lines, string.format('  assistStrength = %.4f,', preset.assistStrength or 0.50))
+    table.insert(lines, string.format('  assistAngleMin = %.1f,', preset.assistAngleMin or 10.0))
+    table.insert(lines, string.format('  assistAngleMax = %.1f,', preset.assistAngleMax or 80.0))
+    table.insert(lines, '  mult = {')
+    if preset.mult then
+        -- Sort keys for consistent file output
+        local keys = {}
+        for k in pairs(preset.mult) do table.insert(keys, k) end
+        table.sort(keys)
+        for _, k in ipairs(keys) do
+            table.insert(lines, string.format('    %s = %.4f,', k, preset.mult[k]))
+        end
+    end
+    table.insert(lines, '  },')
+    table.insert(lines, '  set = {')
+    if preset.set then
+        local keys = {}
+        for k in pairs(preset.set) do table.insert(keys, k) end
+        table.sort(keys)
+        for _, k in ipairs(keys) do
+            table.insert(lines, string.format('    %s = %.4f,', k, preset.set[k]))
+        end
+    end
+    table.insert(lines, '  },')
+    table.insert(lines, '}')
+    return table.concat(lines, '\n')
+end
+
+-- Save a preset to a .lua file
+local function savePresetToFile(preset)
+    ensureSaveDir()
+    -- Sanitize filename: only alphanumeric and underscores
+    local filename = preset.name:gsub('[^%w ]', ''):gsub(' ', '_')
+    local path = SAVE_DIR .. '\\' .. filename .. '.lua'
+    local f = io.open(path, 'w')
+    if not f then
+        notify.push('MikzDrift', 'Failed to save: could not write file')
+        return false
+    end
+    f:write('-- MikzDrift Custom Preset\n')
+    f:write('-- ' .. preset.name .. '\n\n')
+    f:write(serializePreset(preset))
+    f:close()
+    return true
+end
+
+-- Load a single preset from a .lua file
+local function loadPresetFromFile(path)
+    local fn, err = loadfile(path)
+    if not fn then
+        return nil, err
+    end
+    local ok, result = pcall(fn)
+    if not ok or type(result) ~= 'table' then
+        return nil, 'Invalid preset file'
+    end
+    -- Validate required fields
+    if not result.name or not result.mult then
+        return nil, 'Missing name or mult table'
+    end
+    -- Ensure set table exists
+    if not result.set then
+        result.set = { driveBiasFront = 0.0 }
+    end
+    result.isCustom = true
+    return result
+end
+
+-- List all .lua files in the presets folder
+local function listPresetFiles()
+    ensureSaveDir()
+    local files = {}
+    local handle = io.popen('dir "' .. SAVE_DIR .. '\\*.lua" /b 2>nul')
+    if handle then
+        for line in handle:lines() do
+            if line:match('%.lua$') then
+                table.insert(files, line)
+            end
+        end
+        handle:close()
+    end
+    return files
+end
+
+-- Load all saved custom presets from disk
+local function loadAllCustomPresets()
+    local files = listPresetFiles()
+    local loaded = {}
+    for _, filename in ipairs(files) do
+        local path = SAVE_DIR .. '\\' .. filename
+        local preset, err = loadPresetFromFile(path)
+        if preset then
+            table.insert(loaded, preset)
+        end
+    end
+    return loaded
+end
+
+-- Delete a preset file by name
+local function deletePresetFile(presetName)
+    local filename = presetName:gsub('[^%w ]', ''):gsub(' ', '_')
+    local path = SAVE_DIR .. '\\' .. filename .. '.lua'
+    return os.remove(path)
+end
+
+-- Number of built-in presets (used to tell built-in from custom)
+local BUILTIN_COUNT = #PRESETS
+
+-- Load saved custom presets and append to PRESETS
+local function reloadCustomPresets()
+    -- Remove old custom presets (keep only built-ins)
+    while #PRESETS > BUILTIN_COUNT do
+        table.remove(PRESETS)
+    end
+    -- Load from disk and append
+    local customs = loadAllCustomPresets()
+    for _, p in ipairs(customs) do
+        table.insert(PRESETS, p)
+    end
+    return #customs
+end
+
+-- Initial load
+reloadCustomPresets()
+
+-- ============================================================
 -- STATE
 -- ============================================================
 
@@ -887,16 +1030,34 @@ end
 local root = menu.root()
 local driftMenu = root:submenu('MikzDrift')
 
+-- Helper: rebuild the preset selector list (called after adding/removing custom presets)
+local presetSelectorOpt = nil
+
+local function rebuildPresetList()
+    if not presetSelectorOpt then return end
+    local list = {}
+    for i, p in ipairs(PRESETS) do
+        local prefix = (i > BUILTIN_COUNT) and '[Custom] ' or ''
+        list[i] = { prefix .. p.name, i }
+    end
+    presetSelectorOpt:list(list)
+    -- Clamp current selection
+    if currentPreset > #PRESETS then
+        currentPreset = 1
+    end
+end
+
 -- ---- Presets submenu ----
 local presetsMenu = driftMenu:submenu('Drift Presets')
 
 local presetList = {}
 for i, p in ipairs(PRESETS) do
-    presetList[i] = { p.name, i }
+    local prefix = (i > BUILTIN_COUNT) and '[Custom] ' or ''
+    presetList[i] = { prefix .. p.name, i }
 end
 
-presetsMenu:combo_int('Active Preset', presetList, menu.type.scroll)
-    :tooltip('Select FiveM-style drift preset')
+presetSelectorOpt = presetsMenu:combo_int('Active Preset', presetList, menu.type.scroll)
+    :tooltip('Select drift preset (built-in or custom)')
     :event(menu.event.click, function(opt)
         currentPreset = opt.list:at(opt.value).value
         if driftActive then
@@ -908,14 +1069,300 @@ presetsMenu:combo_int('Active Preset', presetList, menu.type.scroll)
         end
     end)
 
--- Add info buttons for each preset
+-- Add info buttons for built-in presets
 for _, p in ipairs(PRESETS) do
-    presetsMenu:button(p.name .. ' - Info')
-        :tooltip(p.desc)
-        :event(menu.event.click, function()
-            notify.push('MikzDrift', p.name .. ': ' .. p.desc, { time = 4000 })
-        end)
+    if not p.isCustom then
+        presetsMenu:button(p.name .. ' - Info')
+            :tooltip(p.desc)
+            :event(menu.event.click, function()
+                notify.push('MikzDrift', p.name .. ': ' .. p.desc, { time = 4000 })
+            end)
+    end
 end
+
+-- ---- Custom Presets submenu ----
+local customMenu = driftMenu:submenu('Custom Presets')
+
+-- Editing state for the custom preset builder
+local editPreset = {
+    name            = 'My Preset',
+    desc            = 'Custom drift preset',
+    assistStrength  = 0.50,
+    assistAngleMin  = 10.0,
+    assistAngleMax  = 80.0,
+    mult = {
+        tractionMin         = 0.70,
+        tractionMax         = 0.75,
+        tractionLateral     = 0.90,
+        tractionBiasFront   = 1.08,
+        tractionLossMult    = 1.50,
+        lowSpeedTractionLoss = 1.60,
+        driveForce          = 1.20,
+        driveInertia        = 1.10,
+        topSpeed            = 1.00,
+        steeringLock        = 1.35,
+        brakeForce          = 0.90,
+        brakeBiasFront      = 1.00,
+        handBrakeForce      = 1.50,
+        suspForce           = 1.20,
+        suspCompDamp        = 1.15,
+        suspReboundDamp     = 1.20,
+        suspUpperLimit      = 0.75,
+        suspLowerLimit      = 0.85,
+        suspBiasFront       = 0.97,
+        antiRollBar         = 0.70,
+        antiRollBiasFront   = 1.00,
+        downforce           = 0.40,
+        dragCoeff           = 0.85,
+        camberStiffness     = 0.60,
+        rollCenterFront     = 0.95,
+        rollCenterRear      = 0.90,
+        mass                = 0.92,
+        percentSubmerged    = 1.00,
+    },
+    set = {
+        driveBiasFront      = 0.0,
+    },
+}
+
+-- ---- Create / Edit submenu ----
+local createMenu = customMenu:submenu('Create New Preset')
+
+-- Slider definitions: { label, key, min, max, step, tooltip }
+local SLIDER_DEFS = {
+    { 'Traction',           {
+        { 'Traction Min',           'tractionMin',          0.10, 1.50, 0.01, 'Rear grip (lower = more slide)' },
+        { 'Traction Max',           'tractionMax',          0.10, 1.50, 0.01, 'Peak grip multiplier' },
+        { 'Traction Lateral',       'tractionLateral',      0.50, 1.20, 0.01, 'Sideways grip' },
+        { 'Traction Bias Front',    'tractionBiasFront',    0.90, 1.30, 0.01, 'Front grip bias (higher = more front grip, rear slides easier)' },
+        { 'Traction Loss',          'tractionLossMult',     0.50, 3.00, 0.05, 'How fast grip is lost (higher = more slide)' },
+        { 'Low Speed Traction Loss','lowSpeedTractionLoss', 0.50, 3.00, 0.05, 'Grip loss at low speed' },
+    }},
+    { 'Drivetrain',         {
+        { 'Drive Force',            'driveForce',           0.50, 2.50, 0.05, 'Engine power multiplier' },
+        { 'Drive Inertia',          'driveInertia',         0.50, 2.00, 0.05, 'Drivetrain responsiveness' },
+        { 'Top Speed',              'topSpeed',             0.50, 1.50, 0.01, 'Top speed multiplier' },
+    }},
+    { 'Steering',           {
+        { 'Steering Lock',          'steeringLock',         1.00, 2.50, 0.05, 'Max steering angle (higher = more angle)' },
+    }},
+    { 'Brakes',             {
+        { 'Brake Force',            'brakeForce',           0.30, 1.20, 0.05, 'Brake power' },
+        { 'Brake Bias Front',       'brakeBiasFront',       0.70, 1.20, 0.05, 'Front brake bias' },
+        { 'Handbrake Force',        'handBrakeForce',       0.50, 3.00, 0.05, 'Handbrake strength for initiating' },
+    }},
+    { 'Suspension',         {
+        { 'Suspension Force',       'suspForce',            0.50, 2.00, 0.05, 'Suspension stiffness' },
+        { 'Compression Damp',       'suspCompDamp',         0.50, 2.00, 0.05, 'Compression damping' },
+        { 'Rebound Damp',           'suspReboundDamp',      0.50, 2.00, 0.05, 'Rebound damping' },
+        { 'Upper Limit',            'suspUpperLimit',       0.30, 1.20, 0.05, 'Max suspension extension' },
+        { 'Lower Limit',            'suspLowerLimit',       0.30, 1.20, 0.05, 'Max suspension compression' },
+        { 'Susp. Bias Front',       'suspBiasFront',        0.70, 1.20, 0.01, 'Front suspension bias' },
+        { 'Anti-Roll Bar',          'antiRollBar',          0.10, 1.50, 0.05, 'Anti-roll stiffness (lower = more body roll)' },
+        { 'Anti-Roll Bias Front',   'antiRollBiasFront',    0.70, 1.20, 0.01, 'Front anti-roll bias' },
+    }},
+    { 'Aero & Weight',      {
+        { 'Downforce',              'downforce',            0.00, 1.50, 0.05, 'Downforce (lower = less grip at speed)' },
+        { 'Drag',                   'dragCoeff',            0.30, 1.50, 0.05, 'Air drag multiplier' },
+        { 'Camber Stiffness',       'camberStiffness',      0.10, 1.20, 0.05, 'Wheel camber stiffness' },
+        { 'Roll Center Front',      'rollCenterFront',      0.50, 1.20, 0.05, 'Front roll center height' },
+        { 'Roll Center Rear',       'rollCenterRear',       0.50, 1.20, 0.05, 'Rear roll center height' },
+        { 'Mass',                   'mass',                 0.60, 1.30, 0.01, 'Vehicle weight multiplier' },
+    }},
+    { 'Assist',             {
+        { 'Counter-Steer Strength', 'assistStrength',       0.00, 1.00, 0.05, 'Controller counter-steer assist strength' },
+    }},
+}
+
+-- Build slider sub-menus for each category
+for _, category in ipairs(SLIDER_DEFS) do
+    local catName = category[1]
+    local sliders = category[2]
+    local catMenu = createMenu:submenu(catName)
+
+    for _, slider in ipairs(sliders) do
+        local label, key, sMin, sMax, step, tip = slider[1], slider[2], slider[3], slider[4], slider[5], slider[6]
+
+        -- Determine which table to read/write
+        local isAssist = (key == 'assistStrength')
+
+        -- Calculate integer range for slider (Lexis uses integer sliders)
+        local steps = math.floor((sMax - sMin) / step + 0.5)
+        local defaultIdx = 0
+        if isAssist then
+            defaultIdx = math.floor((editPreset.assistStrength - sMin) / step + 0.5)
+        else
+            defaultIdx = math.floor(((editPreset.mult[key] or 1.0) - sMin) / step + 0.5)
+        end
+        defaultIdx = math.max(0, math.min(steps, defaultIdx))
+
+        catMenu:slider_int(label, 0, steps, defaultIdx)
+            :tooltip(tip .. string.format(' (%.2f - %.2f)', sMin, sMax))
+            :event(menu.event.click, function(opt)
+                local val = sMin + opt.value * step
+                val = math.floor(val * 10000 + 0.5) / 10000 -- round to 4 decimals
+                if isAssist then
+                    editPreset.assistStrength = val
+                else
+                    editPreset.mult[key] = val
+                end
+            end)
+    end
+end
+
+-- Live preview toggle
+local livePreview = false
+createMenu:toggle('Live Preview')
+    :tooltip('Apply changes in real-time while tuning (must be in vehicle with drift enabled)')
+    :event(menu.event.click, function(opt)
+        livePreview = opt.value
+        if opt.value then
+            local vehicle = getPlayerVehicle()
+            if vehicle and driftActive then
+                applyDriftPreset(vehicle, editPreset)
+                notify.push('MikzDrift', 'Live preview ON')
+            else
+                notify.push('MikzDrift', 'Enable drift on a vehicle first')
+                opt.value = false
+                livePreview = false
+            end
+        end
+    end)
+
+-- Apply preview button
+createMenu:button('Apply Preview')
+    :tooltip('Apply current slider values to your vehicle')
+    :event(menu.event.click, function()
+        local vehicle = getPlayerVehicle()
+        if vehicle and driftActive then
+            applyDriftPreset(vehicle, editPreset)
+            notify.push('MikzDrift', 'Preview applied')
+        else
+            notify.push('MikzDrift', 'Enable drift on a vehicle first')
+        end
+    end)
+
+-- Copy from existing preset
+local copyList = {}
+for i, p in ipairs(PRESETS) do
+    copyList[i] = { p.name, i }
+end
+createMenu:combo_int('Copy From', copyList, menu.type.scroll)
+    :tooltip('Copy all values from a built-in or saved preset as a starting point')
+    :event(menu.event.click, function(opt)
+        local idx = opt.list:at(opt.value).value
+        local source = PRESETS[idx]
+        if source then
+            -- Deep copy mult table
+            editPreset.mult = {}
+            if source.mult then
+                for k, v in pairs(source.mult) do
+                    editPreset.mult[k] = v
+                end
+            end
+            -- Deep copy set table
+            editPreset.set = {}
+            if source.set then
+                for k, v in pairs(source.set) do
+                    editPreset.set[k] = v
+                end
+            end
+            editPreset.assistStrength = source.assistStrength or 0.50
+            editPreset.assistAngleMin = source.assistAngleMin or 10.0
+            editPreset.assistAngleMax = source.assistAngleMax or 80.0
+            notify.push('MikzDrift', 'Copied from: ' .. source.name .. ' (sliders not updated, values applied internally)')
+        end
+    end)
+
+-- Save button
+createMenu:button('Save Preset')
+    :tooltip('Save the current tuning as a custom preset file')
+    :event(menu.event.click, function()
+        -- Build the final preset to save
+        local toSave = {
+            name = editPreset.name,
+            desc = editPreset.desc or 'Custom preset',
+            assistStrength = editPreset.assistStrength,
+            assistAngleMin = editPreset.assistAngleMin,
+            assistAngleMax = editPreset.assistAngleMax,
+            mult = {},
+            set = {},
+            isCustom = true,
+        }
+        for k, v in pairs(editPreset.mult) do
+            toSave.mult[k] = v
+        end
+        for k, v in pairs(editPreset.set) do
+            toSave.set[k] = v
+        end
+        -- Always force RWD
+        toSave.set.driveBiasFront = 0.0
+
+        if savePresetToFile(toSave) then
+            -- Reload and rebuild
+            reloadCustomPresets()
+            rebuildPresetList()
+            notify.push('MikzDrift', 'Saved: ' .. toSave.name, { time = 3000 })
+        end
+    end)
+
+-- Preset name input (using a text option)
+createMenu:text_input('Preset Name', editPreset.name)
+    :tooltip('Set the name for your custom preset')
+    :event(menu.event.click, function(opt)
+        editPreset.name = opt.value
+    end)
+
+-- ---- Manage Saved submenu ----
+local manageMenu = customMenu:submenu('Manage Saved')
+
+manageMenu:button('Reload From Disk')
+    :tooltip('Reload all custom presets from the MikzDrift/presets folder')
+    :event(menu.event.click, function()
+        local count = reloadCustomPresets()
+        rebuildPresetList()
+        notify.push('MikzDrift', 'Loaded ' .. count .. ' custom preset(s)')
+    end)
+
+-- Delete preset selector
+local function buildDeleteList()
+    local list = {}
+    local idx = 1
+    for i = BUILTIN_COUNT + 1, #PRESETS do
+        list[idx] = { PRESETS[i].name, i }
+        idx = idx + 1
+    end
+    return list
+end
+
+local deleteList = buildDeleteList()
+if #deleteList > 0 then
+    manageMenu:combo_int('Select to Delete', deleteList, menu.type.scroll)
+        :tooltip('Select a custom preset to delete')
+        :event(menu.event.click, function(opt)
+            local entry = opt.list:at(opt.value)
+            if entry then
+                local preset = PRESETS[entry.value]
+                if preset and preset.isCustom then
+                    deletePresetFile(preset.name)
+                    reloadCustomPresets()
+                    rebuildPresetList()
+                    notify.push('MikzDrift', 'Deleted: ' .. preset.name)
+                end
+            end
+        end)
+else
+    manageMenu:button('No custom presets saved')
+        :tooltip('Create and save a preset first')
+end
+
+-- Open folder button
+manageMenu:button('Open Presets Folder')
+    :tooltip('Open the MikzDrift presets folder in Explorer')
+    :event(menu.event.click, function()
+        ensureSaveDir()
+        os.execute('explorer "' .. SAVE_DIR .. '"')
+    end)
 
 -- ---- Main toggles ----
 local driftToggle = driftMenu:toggle('Enable Drift')
@@ -1065,6 +1512,11 @@ util.create_thread(function()
                 driftToggle.value = false
                 notify.push('MikzDrift', 'Switched vehicle - drift disabled')
             else
+                -- Live preview: re-apply edit preset each tick while tuning
+                if livePreview then
+                    applyDriftPreset(vehicle, editPreset)
+                end
+
                 updateDriftTracking(vehicle)
                 doCounterSteerAssist(vehicle)
                 doThrottleModulation(vehicle)

@@ -805,19 +805,22 @@ local function updateDriftTracking(vehicle)
         if isDrifting then
             isDrifting = false
             comboTimer = now
-            totalScore = math.min(totalScore + math.floor(driftScore), 999999999)
+            if totalScore < 999999999 then
+                totalScore = math.min(totalScore + math.floor(driftScore), 999999999)
+            end
 
             -- Session stats + personal best notifications
             onDriftEnd(driftDuration, driftScore, peakAngle)
             peakAngle = 0.0
         end
 
-        -- Reset combo after timeout
+        -- Reset combo after timeout (clear timer to avoid repeated resets)
         if comboTimer >= 0 and (now - comboTimer) > COMBO_TIMEOUT and not isDrifting then
             if driftScore > 0 then
                 driftScore = 0
                 comboMultiplier = 1.0
             end
+            comboTimer = -1
         end
     end
 end
@@ -849,7 +852,10 @@ end
 local function startSmoke(vehicle)
     if not tireSmokeEnabled then return end
     if #smokeHandles > 0 then return end
-    if not loadPtfx() then return end
+    if not loadPtfx() then
+        stopSmoke() -- clear any stale handles from previous PTFX session
+        return
+    end
 
     for _, boneName in ipairs(WHEEL_BONES) do
         local boneIdx = invoker.call(N.GET_ENTITY_BONE_INDEX_BY_NAME, vehicle, boneName).int
@@ -1051,11 +1057,13 @@ updateSessionStats = function(vehicle)
         sessionStats.fastestSpeed = speed
     end
 
-    -- Angle sampling for average (cap to prevent overflow on long sessions)
-    if sessionStats.angleSamples < 10000000 then
-        sessionStats.totalAngle = sessionStats.totalAngle + absAngle
-        sessionStats.angleSamples = sessionStats.angleSamples + 1
+    -- Angle sampling for average (normalize to prevent overflow on long sessions)
+    if sessionStats.angleSamples >= 10000000 then
+        sessionStats.totalAngle = sessionStats.totalAngle / 2
+        sessionStats.angleSamples = math.floor(sessionStats.angleSamples / 2)
     end
+    sessionStats.totalAngle = sessionStats.totalAngle + absAngle
+    sessionStats.angleSamples = sessionStats.angleSamples + 1
 end
 
 onDriftStart = function()
@@ -1303,7 +1311,7 @@ local function ghostRecordFrame(vehicle)
     if #ghostFrames >= MAX_GHOST_FRAMES then
         ghostRecording = false
         notify.push('MikzDrift', 'Ghost recording full (' .. MAX_GHOST_FRAMES .. ' frames)')
-        return
+        return -- HUD will stop showing REC since ghostRecording is now false
     end
 
     local pos = invoker.call(N.GET_ENTITY_COORDS, vehicle, true).scr_vec3
@@ -1405,13 +1413,13 @@ local function ghostUpdatePlayback()
         return
     end
 
+    local frame = ghostFrames[ghostPlayIndex]
+
+    -- Advance to next frame (wrap around for looping)
     ghostPlayIndex = ghostPlayIndex + 1
     if ghostPlayIndex > #ghostFrames then
-        -- Loop back to start
         ghostPlayIndex = 1
     end
-
-    local frame = ghostFrames[ghostPlayIndex]
     if frame then
         invoker.call(N.FREEZE_ENTITY_POSITION, ghostVehicle, false)
         invoker.call(N.SET_ENTITY_COORDS_NO_OFFSET, ghostVehicle, frame.x, frame.y, frame.z, false, false, false)
@@ -1519,8 +1527,8 @@ updateTandemScoring = function(vehicle)
         -- Bonus is higher when closer (but not too close)
         -- Ideal distance is ~5-8m
         local idealDist = 6.0
-        local proximity = 1.0 - math.abs(dist - idealDist) / TANDEM_MAX_DIST
-        proximity = clamp(proximity, 0.2, 1.0)
+        local proximity = 1.0 - math.abs(dist - idealDist) / (TANDEM_MAX_DIST * 0.5)
+        proximity = clamp(proximity, 0.0, 1.0)
 
         return TANDEM_MULTIPLIER * proximity
     else
@@ -1619,7 +1627,7 @@ local function drawHUD()
     local res = game.resolution()
     if not res or not res.x or not res.y then return end
 
-    local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
+    local speed = math.abs(invoker.call(N.GET_ENTITY_SPEED, vehicle).float)
     local displaySpeed = useKMH and (speed * 3.6) or (speed * 2.237)
     local speedUnit = useKMH and 'KM/H' or 'MPH'
     local absAngle = math.abs(currentAngle)

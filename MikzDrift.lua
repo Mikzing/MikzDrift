@@ -2541,15 +2541,6 @@ driftMenu:button('Restore Original Handling')
 
 notify.push('MikzDrift', 'v3.0 Loaded | Works on any car | Use the menu to enable', { time = 5000 })
 
--- Cleanup on script unload: stop smoke, restore handling
-this:event(this.event.unload, function()
-    stopSmoke()
-    ghostStopPlayback()
-    if lastVehicle and originalHandling then
-        restoreHandling(lastVehicle)
-    end
-end)
-
 -- Track last vehicle we were in (for auto-apply detection)
 local lastCheckedVehicle = nil
 

@@ -76,39 +76,25 @@ local N = {
 -- HANDLING FIELD MAP (expanded for FiveM-style tuning)
 -- ============================================================
 
--- Only fields proven safe to modify at runtime in GTA Online.
--- Removed: fTractionCurveLateral, fDownforceModifier, fCamberStiffnesss,
--- fRollCentreHeightFront/Rear, fSuspensionUpperLimit, fSuspensionLowerLimit,
--- fPercentSubmerged — these can crash the game or do nothing via runtime API.
+-- ONLY fields that are safe to SET at runtime in GTA Online.
+-- Suspension, brakes, mass, drag, anti-roll — all crash the game.
 
 local HANDLING_FIELDS = {
-    -- Traction
+    -- Traction (safe)
     { field = 'fTractionCurveMin',         key = 'tractionMin' },
     { field = 'fTractionCurveMax',         key = 'tractionMax' },
     { field = 'fTractionBiasFront',        key = 'tractionBiasFront' },
     { field = 'fTractionLossMult',         key = 'tractionLossMult' },
     { field = 'fLowSpeedTractionLossMult', key = 'lowSpeedTractionLoss' },
-    -- Drivetrain
+    -- Drivetrain (safe)
     { field = 'fDriveBiasFront',           key = 'driveBiasFront' },
     { field = 'fInitialDriveForce',        key = 'driveForce' },
     { field = 'fDriveInertia',             key = 'driveInertia' },
     { field = 'fInitialDriveMaxFlatVel',   key = 'topSpeed' },
-    -- Steering
+    -- Steering (safe)
     { field = 'fSteeringLock',             key = 'steeringLock' },
-    -- Brakes
-    { field = 'fBrakeForce',               key = 'brakeForce' },
-    { field = 'fBrakeBiasFront',           key = 'brakeBiasFront' },
+    -- Handbrake (safe)
     { field = 'fHandBrakeForce',           key = 'handBrakeForce' },
-    -- Suspension
-    { field = 'fSuspensionForce',          key = 'suspForce' },
-    { field = 'fSuspensionCompDamp',       key = 'suspCompDamp' },
-    { field = 'fSuspensionReboundDamp',    key = 'suspReboundDamp' },
-    { field = 'fSuspensionBiasFront',      key = 'suspBiasFront' },
-    { field = 'fAntiRollBarForce',         key = 'antiRollBar' },
-    { field = 'fAntiRollBarBiasFront',     key = 'antiRollBiasFront' },
-    -- Aero / weight
-    { field = 'fInitialDragCoeff',         key = 'dragCoeff' },
-    { field = 'fMass',                     key = 'mass' },
 }
 
 -- ============================================================
@@ -136,16 +122,6 @@ local PRESETS = {
             driveForce          = 1.15,
             driveInertia        = 1.05,
             topSpeed            = 1.00,
-            brakeForce          = 0.95,
-            brakeBiasFront      = 1.05,
-            suspForce           = 1.15,
-            suspCompDamp        = 1.10,
-            suspReboundDamp     = 1.15,
-            suspBiasFront       = 1.00,
-            antiRollBar         = 0.80,
-            antiRollBiasFront   = 1.05,
-            dragCoeff           = 0.90,
-            mass                = 0.95,
         },
         set = {
             driveBiasFront      = 0.0,
@@ -170,16 +146,6 @@ local PRESETS = {
             driveForce          = 1.20,
             driveInertia        = 1.10,
             topSpeed            = 1.00,
-            brakeForce          = 0.90,
-            brakeBiasFront      = 1.00,
-            suspForce           = 1.20,
-            suspCompDamp        = 1.15,
-            suspReboundDamp     = 1.20,
-            suspBiasFront       = 0.97,
-            antiRollBar         = 0.70,
-            antiRollBiasFront   = 1.00,
-            dragCoeff           = 0.85,
-            mass                = 0.92,
         },
         set = {
             driveBiasFront      = 0.0,
@@ -204,16 +170,6 @@ local PRESETS = {
             driveForce          = 1.30,
             driveInertia        = 1.15,
             topSpeed            = 1.02,
-            brakeForce          = 0.85,
-            brakeBiasFront      = 0.97,
-            suspForce           = 1.25,
-            suspCompDamp        = 1.20,
-            suspReboundDamp     = 1.25,
-            suspBiasFront       = 0.95,
-            antiRollBar         = 0.55,
-            antiRollBiasFront   = 1.00,
-            dragCoeff           = 0.80,
-            mass                = 0.90,
         },
         set = {
             driveBiasFront      = 0.0,
@@ -238,16 +194,6 @@ local PRESETS = {
             driveForce          = 1.45,
             driveInertia        = 1.20,
             topSpeed            = 1.05,
-            brakeForce          = 0.80,
-            brakeBiasFront      = 0.93,
-            suspForce           = 1.30,
-            suspCompDamp        = 1.25,
-            suspReboundDamp     = 1.30,
-            suspBiasFront       = 0.93,
-            antiRollBar         = 0.40,
-            antiRollBiasFront   = 0.97,
-            dragCoeff           = 0.72,
-            mass                = 0.87,
         },
         set = {
             driveBiasFront      = 0.0,
@@ -272,16 +218,6 @@ local PRESETS = {
             driveForce          = 1.60,
             driveInertia        = 1.25,
             topSpeed            = 1.08,
-            brakeForce          = 0.75,
-            brakeBiasFront      = 0.90,
-            suspForce           = 1.35,
-            suspCompDamp        = 1.30,
-            suspReboundDamp     = 1.35,
-            suspBiasFront       = 0.90,
-            antiRollBar         = 0.30,
-            antiRollBiasFront   = 0.95,
-            dragCoeff           = 0.65,
-            mass                = 0.85,
         },
         set = {
             driveBiasFront      = 0.0,
@@ -306,16 +242,6 @@ local PRESETS = {
             driveForce          = 1.75,
             driveInertia        = 1.35,
             topSpeed            = 0.90,
-            brakeForce          = 0.70,
-            brakeBiasFront      = 0.88,
-            suspForce           = 1.40,
-            suspCompDamp        = 1.35,
-            suspReboundDamp     = 1.40,
-            suspBiasFront       = 0.88,
-            antiRollBar         = 0.20,
-            antiRollBiasFront   = 0.93,
-            dragCoeff           = 0.60,
-            mass                = 0.82,
         },
         set = {
             driveBiasFront      = 0.0,
@@ -1803,16 +1729,6 @@ local editPreset = {
         driveForce          = 1.20,
         driveInertia        = 1.10,
         topSpeed            = 1.00,
-        brakeForce          = 0.90,
-        brakeBiasFront      = 1.00,
-        suspForce           = 1.20,
-        suspCompDamp        = 1.15,
-        suspReboundDamp     = 1.20,
-        suspBiasFront       = 0.97,
-        antiRollBar         = 0.70,
-        antiRollBiasFront   = 1.00,
-        dragCoeff           = 0.85,
-        mass                = 0.92,
     },
     set = {
         driveBiasFront      = 0.0,
@@ -1840,21 +1756,7 @@ local SLIDER_DEFS = {
         { 'Steering Lock',          'steeringLock',         1.00, 2.50, 0.05, 'Max steering angle (higher = more angle)' },
     }},
     { 'Brakes',             {
-        { 'Brake Force',            'brakeForce',           0.30, 1.20, 0.05, 'Brake power' },
-        { 'Brake Bias Front',       'brakeBiasFront',       0.70, 1.20, 0.05, 'Front brake bias' },
         { 'Handbrake Force',        'handBrakeForce',       0.50, 3.00, 0.05, 'Handbrake strength for initiating' },
-    }},
-    { 'Suspension',         {
-        { 'Suspension Force',       'suspForce',            0.50, 2.00, 0.05, 'Suspension stiffness' },
-        { 'Compression Damp',       'suspCompDamp',         0.50, 2.00, 0.05, 'Compression damping' },
-        { 'Rebound Damp',           'suspReboundDamp',      0.50, 2.00, 0.05, 'Rebound damping' },
-        { 'Susp. Bias Front',       'suspBiasFront',        0.70, 1.20, 0.01, 'Front suspension bias' },
-        { 'Anti-Roll Bar',          'antiRollBar',          0.10, 1.50, 0.05, 'Anti-roll stiffness (lower = more body roll)' },
-        { 'Anti-Roll Bias Front',   'antiRollBiasFront',    0.70, 1.20, 0.01, 'Front anti-roll bias' },
-    }},
-    { 'Aero & Weight',      {
-        { 'Drag',                   'dragCoeff',            0.30, 1.50, 0.05, 'Air drag multiplier' },
-        { 'Mass',                   'mass',                 0.60, 1.30, 0.01, 'Vehicle weight multiplier' },
     }},
     { 'Assist',             {
         { 'Counter-Steer Strength', 'assistStrength',       0.00, 1.00, 0.05, 'Controller counter-steer assist strength' },
@@ -2297,9 +2199,6 @@ local OFFSET_SLIDERS = {
     { 'Drive Force',        'driveForce',           -0.30, 0.30, 0.05, 'Power offset' },
     { 'Steering Lock',      'steeringLock',         -0.30, 0.30, 0.05, 'Steering angle offset' },
     { 'Handbrake Force',    'handBrakeForce',       -0.50, 0.50, 0.05, 'Handbrake offset' },
-    { 'Suspension Force',   'suspForce',            -0.30, 0.30, 0.05, 'Suspension stiffness offset' },
-    { 'Anti-Roll Bar',      'antiRollBar',          -0.30, 0.30, 0.05, 'Anti-roll offset' },
-    { 'Mass',               'mass',                 -0.15, 0.15, 0.01, 'Weight offset' },
 }
 
 for _, slider in ipairs(OFFSET_SLIDERS) do

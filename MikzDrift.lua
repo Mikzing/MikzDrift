@@ -59,6 +59,7 @@ local N = {
     PLAY_SOUND_FROM_ENTITY          = 0xE65F427EB70AB1ED,
     GET_SOUND_ID                    = 0x430386F9BF80B45C,
     RELEASE_SOUND_ID                = 0x353FC880830B88FA,
+    DOES_ENTITY_EXIST               = 0x7239B21A38F536BA,
     GET_ENTITY_MODEL                = 0x9F47B058362C84B5,
     SET_GAMEPLAY_CAM_RELATIVE_HEADING = 0xB4EC2312F4E5B1F1,
     SET_GAMEPLAY_CAM_RELATIVE_PITCH = 0x6D0858B8EDFA2BCD,
@@ -650,7 +651,7 @@ end
 local function restoreHandling(vehicle)
     if not originalHandling then return end
     -- Only write to vehicle if it still exists
-    if vehicle and invoker.call(N.GET_ENTITY_SPEED, vehicle) then
+    if vehicle and invoker.call(N.DOES_ENTITY_EXIST, vehicle).bool then
         for _, e in ipairs(HANDLING_FIELDS) do
             if originalHandling[e.key] then
                 invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle, joaat('CHandlingData'), joaat(e.field), originalHandling[e.key])
@@ -970,16 +971,25 @@ end
 
 local function rememberCarPreset(vehicle, presetIdx)
     local hash = getVehicleModelHash(vehicle)
-    if hash and hash ~= 0 then
-        carPresetMap[hash] = presetIdx
+    if hash and hash ~= 0 and PRESETS[presetIdx] then
+        -- Store preset name instead of index to survive preset list changes
+        carPresetMap[hash] = PRESETS[presetIdx].name
     end
 end
 
 local function getRememberedPreset(vehicle)
     local hash = getVehicleModelHash(vehicle)
-    if hash and carPresetMap[hash] then
-        return carPresetMap[hash]
+    if not hash or not carPresetMap[hash] then return nil end
+
+    local name = carPresetMap[hash]
+    -- Find the preset by name (index may have shifted)
+    for i, p in ipairs(PRESETS) do
+        if p.name == name then
+            return i
+        end
     end
+    -- Preset was deleted, clear the stale entry
+    carPresetMap[hash] = nil
     return nil
 end
 
@@ -2025,6 +2035,10 @@ util.create_thread(function()
                 -- Live preview: re-apply edit preset each tick while tuning
                 if livePreview then
                     applyDriftPreset(vehicle, editPreset)
+                    if awdDriveBias > 0 then
+                        invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                            joaat('CHandlingData'), joaat('fDriveBiasFront'), awdDriveBias)
+                    end
                 end
 
                 updateDriftTracking(vehicle)

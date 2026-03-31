@@ -937,12 +937,15 @@ local function updateTireSmoke(vehicle)
         return
     end
 
-    local absAngle = math.abs(currentAngle)
     local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
 
-    if absAngle > 12.0 and speed > 5.0 then
+    -- Use raw drift angle (not smoothed) so smoke stops instantly when car stops
+    local rawAngle = math.abs(calcDriftAngle(vehicle))
+
+    if rawAngle > 12.0 and speed > 5.0 then
         startSmoke(vehicle)
-        updateSmokeScale(absAngle, speed)
+        -- Use smoothed angle for scale so it looks smooth visually
+        updateSmokeScale(math.abs(currentAngle), speed)
     else
         stopSmoke()
     end

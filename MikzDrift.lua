@@ -1,7 +1,7 @@
 -- ============================================================
 -- MikzDrift v3.0 - FiveM-Style Drift Preset Script for Lexis
 -- Multiplier-based system: works on every car in GTA Online
--- No custom keybinds — drive normally, control everything via menu
+-- C key cycles presets while drifting, everything else via menu
 -- ============================================================
 
 local natives = require('natives')
@@ -17,64 +17,39 @@ end
 -- ============================================================
 
 local N = {
-    PLAYER_PED_ID                   = 0xD80958FC74E988A6,
-    IS_PED_IN_ANY_VEHICLE           = 0x997ABD671D25CA0B,
-    GET_VEHICLE_PED_IS_IN           = 0x9A9112A0FE9A4713,
-    GET_ENTITY_SPEED                = 0xD5037BA82E12416F,
-    GET_ENTITY_HEADING              = 0xE83D4F9BA2A38914,
-    GET_ENTITY_VELOCITY             = 0x4805D2B1D8CF94A9,
-    GET_ENTITY_COORDS               = 0x3FEF770D40960D5A,
-    GET_ENTITY_ROTATION             = 0xAFBD61CC738D9EB9,
-    GET_ENTITY_SPEED_VECTOR         = 0x9A8D700A51CB7B0D,
-    GET_ENTITY_FORWARD_VECTOR       = 0x0A794A5A57F8DF91,
-    APPLY_FORCE_TO_ENTITY           = 0xC5F68BE9613E2D18,
-    SET_ENTITY_MAX_SPEED            = 0x916A733C5BFFD6DF,
-    GET_VEHICLE_HANDLING_FLOAT      = 0x642FC12F36B74811,
-    SET_VEHICLE_HANDLING_FLOAT      = 0x488C86D2B073C895,
-    SET_VEHICLE_HANDLING_INT        = 0x4BA96F93E61C8016,
-    GET_VEHICLE_HANDLING_INT        = 0x27396CF7F08B429E,
-    MODIFY_VEHICLE_TOP_SPEED        = 0x93A3996368C94158,
-    SET_VEHICLE_CHEAT_POWER_INCREASE = 0xB59E4BD37AE292DB,
-    IS_VEHICLE_ON_ALL_WHEELS        = 0xB104CD1BABF302E2,
-    SET_VEHICLE_REDUCE_GRIP         = 0x222FF6A823D122E2,
-    SET_VEHICLE_BURNOUT             = 0xFB8794444A7D60FB,
-    IS_VEHICLE_IN_BURNOUT           = 0x1297A88E081430EB,
-    GET_VEHICLE_WHEEL_SPEED         = 0x149C9DA0E06E4B63,
-    SET_VEHICLE_TYRE_SMOKE_COLOR    = 0xB5BA80F839791C56,
-    IS_USING_KEYBOARD_AND_MOUSE     = 0xA571D46727E2B718,
-    GET_CONTROL_NORMAL              = 0xEC3C9B8D5327B563,
-    IS_CONTROL_JUST_PRESSED         = 0x580417101DDB492F,
-    IS_CONTROL_PRESSED              = 0xF3A21BCD95725A4A,
-    USE_PARTICLE_FX_ASSET           = 0x6C38AF3693A69A91,
-    REQUEST_NAMED_PTFX_ASSET        = 0xB80D8756B4668AB6,
-    HAS_NAMED_PTFX_ASSET_LOADED     = 0x8702FAD857104A22,
-    START_PARTICLE_FX_LOOPED_ON_ENTITY = 0x1AE42C1660FD6517,
-    STOP_PARTICLE_FX_LOOPED         = 0x8F75B0F96A21CD8A,
-    SET_PARTICLE_FX_LOOPED_SCALE    = 0xB44250AAA456492B,
-    SET_PARTICLE_FX_LOOPED_COLOUR   = 0x7F8F65877F88783B,
-    GET_ENTITY_BONE_INDEX_BY_NAME   = 0xFB71170B7E76ACBA,
+    -- Player / Ped
+    PLAYER_PED_ID                       = 0xD80958FC74E988A6,
+    IS_PED_IN_ANY_VEHICLE               = 0x997ABD671D25CA0B,
+    GET_VEHICLE_PED_IS_IN               = 0x9A9112A0FE9A4713,
+    -- Entity
+    DOES_ENTITY_EXIST                   = 0x7239B21A38F536BA,
+    GET_ENTITY_SPEED                    = 0xD5037BA82E12416F,
+    GET_ENTITY_HEADING                  = 0xE83D4F9BA2A38914,
+    GET_ENTITY_VELOCITY                 = 0x4805D2B1D8CF94A9,
+    GET_ENTITY_MODEL                    = 0x9F47B058362C84B5,
+    GET_ENTITY_BONE_INDEX_BY_NAME       = 0xFB71170B7E76ACBA,
+    APPLY_FORCE_TO_ENTITY               = 0xC5F68BE9613E2D18,
+    -- Vehicle handling
+    GET_VEHICLE_HANDLING_FLOAT          = 0x642FC12F36B74811,
+    SET_VEHICLE_HANDLING_FLOAT          = 0x488C86D2B073C895,
+    -- Input
+    IS_USING_KEYBOARD_AND_MOUSE         = 0xA571D46727E2B718,
+    GET_CONTROL_NORMAL                  = 0xEC3C9B8D5327B563,
+    IS_CONTROL_PRESSED                  = 0xF3A21BCD95725A4A,
+    -- Particle FX
+    USE_PARTICLE_FX_ASSET               = 0x6C38AF3693A69A91,
+    REQUEST_NAMED_PTFX_ASSET            = 0xB80D8756B4668AB6,
+    HAS_NAMED_PTFX_ASSET_LOADED         = 0x8702FAD857104A22,
+    START_PARTICLE_FX_LOOPED_ON_ENTITY  = 0x1AE42C1660FD6517,
+    STOP_PARTICLE_FX_LOOPED             = 0x8F75B0F96A21CD8A,
+    SET_PARTICLE_FX_LOOPED_SCALE        = 0xB44250AAA456492B,
+    SET_PARTICLE_FX_LOOPED_COLOUR       = 0x7F8F65877F88783B,
     START_PARTICLE_FX_NON_LOOPED_ON_ENTITY = 0x0D53A3B8DA0809D2,
-    SET_PARTICLE_FX_NON_LOOPED_COLOUR = 0x26143A59EF48B262,
-    GET_GAME_TIMER                  = 0x9CD27B0045628463,
-    PLAY_SOUND_FROM_ENTITY          = 0xE65F427EB70AB1ED,
-    GET_SOUND_ID                    = 0x430386F9BF80B45C,
-    RELEASE_SOUND_ID                = 0x353FC880830B88FA,
-    DOES_ENTITY_EXIST               = 0x7239B21A38F536BA,
-    GET_ENTITY_MODEL                = 0x9F47B058362C84B5,
-    SET_GAMEPLAY_CAM_RELATIVE_HEADING = 0xB4EC2312F4E5B1F1,
-    SET_GAMEPLAY_CAM_RELATIVE_PITCH = 0x6D0858B8EDFA2BCD,
-    SET_CAM_ACTIVE                  = 0x026FB97D0A425F84,
-    RENDER_SCRIPT_CAMS              = 0x07E5B515DB0636FC,
-    CREATE_CAM_WITH_PARAMS          = 0xB51194800B257161,
-    SET_CAM_FOV                     = 0xB13C14F66A00D047,
-    SET_CAM_NEAR_CLIP               = 0xC7848EFCCC545182,
-    DESTROY_CAM                     = 0x865908C81A2C22E9,
-    SET_FOLLOW_VEHICLE_CAM_VIEW_MODE = 0xAC253D7842768F48,
-    GET_FOLLOW_VEHICLE_CAM_VIEW_MODE = 0xA4FF579AC0E3AAAE,
-    SET_FOLLOW_VEHICLE_CAM_ZOOM_LEVEL = 0x19464CB6E4078C8A,
-    GET_GAMEPLAY_CAM_FOV            = 0x65019750A0324133,
-    IS_CONTROL_JUST_RELEASED        = 0x0C076D25CC7AAE5B,
-    GET_VEHICLE_RPM                 = 0xE7B12B54,
+    -- Camera
+    SET_GAMEPLAY_CAM_RELATIVE_HEADING   = 0xB4EC2312F4E5B1F1,
+    SET_FOLLOW_VEHICLE_CAM_ZOOM_LEVEL   = 0x19464CB6E4078C8A,
+    -- Timer
+    GET_GAME_TIMER                      = 0x9CD27B0045628463,
 }
 
 -- ============================================================
@@ -389,11 +364,16 @@ local PRESETS = {
 -- Saves/loads .lua preset files in scripts/MikzDrift/presets/
 -- ============================================================
 
-local SAVE_DIR = this.dir() .. '\\MikzDrift\\presets'
+local PATH_SEP = package.config:sub(1, 1) -- '\\' on Windows, '/' on Unix
+local SAVE_DIR = this.dir() .. PATH_SEP .. 'MikzDrift' .. PATH_SEP .. 'presets'
 
 -- Ensure save directory exists
 local function ensureSaveDir()
-    os.execute('mkdir "' .. SAVE_DIR .. '" 2>nul')
+    if PATH_SEP == '\\' then
+        os.execute('mkdir "' .. SAVE_DIR .. '" 2>nul')
+    else
+        os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
+    end
 end
 
 -- Serialize a preset table to a saveable string
@@ -435,7 +415,7 @@ local function savePresetToFile(preset)
     ensureSaveDir()
     -- Sanitize filename: only alphanumeric and underscores
     local filename = preset.name:gsub('[^%w ]', ''):gsub(' ', '_')
-    local path = SAVE_DIR .. '\\' .. filename .. '.lua'
+    local path = SAVE_DIR .. PATH_SEP .. filename .. '.lua'
     local f = io.open(path, 'w')
     if not f then
         notify.push('MikzDrift', 'Failed to save: could not write file')
@@ -474,7 +454,13 @@ end
 local function listPresetFiles()
     ensureSaveDir()
     local files = {}
-    local handle = io.popen('dir "' .. SAVE_DIR .. '\\*.lua" /b 2>nul')
+    local cmd
+    if PATH_SEP == '\\' then
+        cmd = 'dir "' .. SAVE_DIR .. '\\*.lua" /b 2>nul'
+    else
+        cmd = 'ls -1 "' .. SAVE_DIR .. '/" 2>/dev/null | grep "\\.lua$"'
+    end
+    local handle = io.popen(cmd)
     if handle then
         for line in handle:lines() do
             if line:match('%.lua$') then
@@ -491,7 +477,7 @@ local function loadAllCustomPresets()
     local files = listPresetFiles()
     local loaded = {}
     for _, filename in ipairs(files) do
-        local path = SAVE_DIR .. '\\' .. filename
+        local path = SAVE_DIR .. PATH_SEP .. filename
         local preset, err = loadPresetFromFile(path)
         if preset then
             table.insert(loaded, preset)
@@ -503,7 +489,7 @@ end
 -- Delete a preset file by name
 local function deletePresetFile(presetName)
     local filename = presetName:gsub('[^%w ]', ''):gsub(' ', '_')
-    local path = SAVE_DIR .. '\\' .. filename .. '.lua'
+    local path = SAVE_DIR .. PATH_SEP .. filename .. '.lua'
     return os.remove(path)
 end
 
@@ -733,7 +719,7 @@ local function updateDriftTracking(vehicle)
     local absAngle = math.abs(currentAngle)
     local now = getGameTime()
     local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
-    local speedMPH = speed * 2.237
+    local scoreSpeed = speed * 2.237 -- internal scoring unit (always MPH)
 
     if absAngle >= DRIFT_ANGLE_THRESHOLD and speed > 5.0 then
         if not isDrifting then
@@ -757,7 +743,7 @@ local function updateDriftTracking(vehicle)
 
         -- Scoring: angle * speed * combo
         driftDuration = (now - driftStartTime) / 1000.0
-        local tickScore = (absAngle / 10.0) * (speedMPH / 30.0) * comboMultiplier * SCORE_MULTIPLIER
+        local tickScore = (absAngle / 10.0) * (scoreSpeed / 30.0) * comboMultiplier * SCORE_MULTIPLIER
         driftScore = driftScore + tickScore
 
         -- Grow combo over time
@@ -1756,7 +1742,11 @@ manageMenu:button('Open Presets Folder')
     :tooltip('Open the MikzDrift presets folder in Explorer')
     :event(menu.event.click, function()
         ensureSaveDir()
-        os.execute('explorer "' .. SAVE_DIR .. '"')
+        if PATH_SEP == '\\' then
+            os.execute('explorer "' .. SAVE_DIR .. '"')
+        else
+            os.execute('xdg-open "' .. SAVE_DIR .. '" &')
+        end
     end)
 
 -- ---- Main toggles ----

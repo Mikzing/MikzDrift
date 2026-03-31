@@ -1,7 +1,7 @@
 -- ============================================================
 -- MikzDrift v2.1 - FiveM-Style Drift Preset Script for Lexis
 -- Multiplier-based system: works on every car in GTA Online
--- Full controller support (GTA 5 layout)
+-- No custom keybinds — drive normally, control everything via menu
 -- ============================================================
 
 local natives = require('natives')
@@ -401,14 +401,6 @@ local bestCombo         = 0
 local smokeHandles      = {}
 local ptfxLoaded        = false
 local smokeColor        = { r = 255, g = 255, b = 255 }
-
--- Controller pad IDs (GTA 5 layout)
-local PAD_DPAD_UP       = 0x8FD015D8
-local PAD_DPAD_DOWN     = 0x9137C510
-local PAD_DPAD_LEFT     = 0xA65EBAB4
-local PAD_DPAD_RIGHT    = 0xDEB34313
-local PAD_RB            = 0xE30CD707
-local PAD_LB            = 0xFD1F1CF3
 
 -- ============================================================
 -- CORE HELPERS
@@ -1048,97 +1040,10 @@ driftMenu:button('Restore Original Handling')
     end)
 
 -- ============================================================
--- CONTROLLER HOTKEYS (GTA 5 default layout)
---   D-Pad Left     = Toggle drift on/off
---   D-Pad Up/Down  = Cycle presets
---   D-Pad Right    = Reset score
---   RB + D-Pad Up  = Toggle smoke
---   RB + D-Pad Down = Toggle assist
--- ============================================================
-
-local padCooldown = 0
-
-local function handleControllerInput()
-    local now = getGameTime()
-    if now < padCooldown then return end
-
-    local vehicle = getPlayerVehicle()
-    if not vehicle then return end
-
-    local rbHeld = input.pad(PAD_RB).pressed
-
-    -- D-Pad Left: Toggle drift
-    local dpadLeft = input.pad(PAD_DPAD_LEFT)
-    if dpadLeft.just_pressed and not rbHeld then
-        if not driftActive then
-            originalHandling = saveHandling(vehicle)
-            lastVehicle = vehicle
-            applyDriftPreset(vehicle, PRESETS[currentPreset])
-            driftActive = true
-            driftToggle.value = true
-            resetDriftState()
-            notify.push('MikzDrift', 'Drift ON - ' .. PRESETS[currentPreset].name)
-        else
-            disableDrift()
-            driftToggle.value = false
-            notify.push('MikzDrift', 'Drift OFF')
-        end
-        padCooldown = now + 300
-    end
-
-    -- D-Pad Up: Previous preset (or toggle smoke with RB)
-    local dpadUp = input.pad(PAD_DPAD_UP)
-    if dpadUp.just_pressed then
-        if rbHeld then
-            tireSmokeEnabled = not tireSmokeEnabled
-            if not tireSmokeEnabled then stopSmoke() end
-            notify.push('MikzDrift', 'Tire smoke: ' .. (tireSmokeEnabled and 'ON' or 'OFF'))
-        else
-            currentPreset = currentPreset - 1
-            if currentPreset < 1 then currentPreset = #PRESETS end
-            if driftActive then
-                applyDriftPreset(vehicle, PRESETS[currentPreset])
-            end
-            notify.push('MikzDrift', PRESETS[currentPreset].name .. ': ' .. PRESETS[currentPreset].desc)
-        end
-        padCooldown = now + 250
-    end
-
-    -- D-Pad Down: Next preset (or toggle assist with RB)
-    local dpadDown = input.pad(PAD_DPAD_DOWN)
-    if dpadDown.just_pressed then
-        if rbHeld then
-            counterSteerEnabled = not counterSteerEnabled
-            notify.push('MikzDrift', 'Counter-steer: ' .. (counterSteerEnabled and 'ON' or 'OFF'))
-        else
-            currentPreset = currentPreset + 1
-            if currentPreset > #PRESETS then currentPreset = 1 end
-            if driftActive then
-                applyDriftPreset(vehicle, PRESETS[currentPreset])
-            end
-            notify.push('MikzDrift', PRESETS[currentPreset].name .. ': ' .. PRESETS[currentPreset].desc)
-        end
-        padCooldown = now + 250
-    end
-
-    -- D-Pad Right: Reset score
-    local dpadRight = input.pad(PAD_DPAD_RIGHT)
-    if dpadRight.just_pressed and not rbHeld then
-        totalScore = 0
-        bestAngle = 0.0
-        bestCombo = 0
-        driftScore = 0
-        comboMultiplier = 1.0
-        notify.push('MikzDrift', 'Score reset!')
-        padCooldown = now + 300
-    end
-end
-
--- ============================================================
 -- MAIN THREAD
 -- ============================================================
 
-notify.push('MikzDrift', 'v2.1 Loaded | Works on any car | D-Pad controls', { time = 5000 })
+notify.push('MikzDrift', 'v2.1 Loaded | Works on any car | Use the menu to enable', { time = 5000 })
 
 -- Cleanup on script unload: stop smoke, restore handling
 this:event(this.event.unload, function()
@@ -1150,8 +1055,6 @@ end)
 
 util.create_thread(function()
     while true do
-        handleControllerInput()
-
         local vehicle = getPlayerVehicle()
 
         if vehicle and driftActive then

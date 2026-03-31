@@ -1,7 +1,7 @@
 -- ============================================================
 -- MikzDrift v3.0 - FiveM-Style Drift Preset Script for Lexis
 -- Multiplier-based system: works on every car in GTA Online
--- C key cycles presets while drifting, everything else via menu
+-- Everything controlled via the Lexis menu
 -- ============================================================
 
 local natives = require('natives')
@@ -622,8 +622,6 @@ local backfireCooldown   = 0
 -- AWD drift bias (0.0 = RWD, 0.1 = 10/90, etc.)
 local awdDriveBias      = 0.0
 
--- Keyboard hotkey (virtual key code for C)
-local CYCLE_PRESET_VK   = 0x43  -- VK_C
 
 -- Ghost replay state
 local ghostEnabled      = false
@@ -1290,34 +1288,6 @@ getAngleSmokeColor = function(absAngle)
     end
 end
 
--- ============================================================
--- KEYBOARD HOTKEY
--- ============================================================
-
-local function handleKeyboardHotkey()
-    -- C key to cycle presets (only when drift is active)
-    if not driftActive then return end
-
-    local key = input.keyboard(CYCLE_PRESET_VK)
-    if key.just_pressed then
-        currentPreset = currentPreset + 1
-        if currentPreset > #PRESETS then currentPreset = 1 end
-
-        local vehicle = getPlayerVehicle()
-        if vehicle then
-            applyDriftPreset(vehicle, PRESETS[currentPreset])
-            -- Re-apply AWD bias after preset switch
-            if awdDriveBias > 0 then
-                invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
-                    joaat('CHandlingData'), joaat('fDriveBiasFront'), awdDriveBias)
-            end
-            if autoApplyEnabled then
-                rememberCarPreset(vehicle, currentPreset)
-            end
-        end
-        notify.push('MikzDrift', 'Preset: ' .. PRESETS[currentPreset].name)
-    end
-end
 
 -- ============================================================
 -- GHOST REPLAY SYSTEM
@@ -2614,9 +2584,6 @@ util.create_thread(function()
 
         -- Ghost playback runs independently of drift state
         ghostUpdatePlayback()
-
-        -- Keyboard hotkey (works anytime)
-        handleKeyboardHotkey()
 
         drawHUD()
         end) -- pcall

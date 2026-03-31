@@ -19,6 +19,7 @@ end
 local N = {
     -- Player / Ped
     PLAYER_PED_ID                       = 0xD80958FC74E988A6,
+    PLAYER_ID                           = 0x4F8644AF03DED0E7,
     IS_PED_IN_ANY_VEHICLE               = 0x997ABD671D25CA0B,
     GET_VEHICLE_PED_IS_IN               = 0x9A9112A0FE9A4713,
     -- Entity
@@ -27,11 +28,29 @@ local N = {
     GET_ENTITY_HEADING                  = 0xE83D4F9BA2A38914,
     GET_ENTITY_VELOCITY                 = 0x4805D2B1D8CF94A9,
     GET_ENTITY_MODEL                    = 0x9F47B058362C84B5,
+    GET_ENTITY_COORDS                   = 0x3FEF770D40960D5A,
+    GET_ENTITY_ROTATION                 = 0xAFBD61CC738D9EB9,
     GET_ENTITY_BONE_INDEX_BY_NAME       = 0xFB71170B7E76ACBA,
     APPLY_FORCE_TO_ENTITY               = 0xC5F68BE9613E2D18,
-    -- Vehicle handling
+    SET_ENTITY_COORDS_NO_OFFSET         = 0x239A3351AC1DA385,
+    SET_ENTITY_ROTATION                 = 0x8524A8B0171D7F07,
+    SET_ENTITY_ALPHA                    = 0x44A0870B7E92D7C0,
+    RESET_ENTITY_ALPHA                  = 0x9B1E824FFBB7027A,
+    SET_ENTITY_COLLISION                = 0x1A9205C1B2B86BFF,
+    SET_ENTITY_VISIBLE                  = 0xEA1C610A04DB6BBB,
+    SET_ENTITY_INVINCIBLE               = 0x3882114BDE571AD4,
+    FREEZE_ENTITY_POSITION              = 0x428CA6DBD1094446,
+    -- Vehicle
     GET_VEHICLE_HANDLING_FLOAT          = 0x642FC12F36B74811,
     SET_VEHICLE_HANDLING_FLOAT          = 0x488C86D2B073C895,
+    CREATE_VEHICLE                      = 0xAF35D0D2583051B0,
+    DELETE_VEHICLE                      = 0xCEA7CE485B40CA72,
+    SET_VEHICLE_ON_GROUND_PROPERLY      = 0x49733E92263139D1,
+    -- Player / network
+    GET_PLAYER_PED                      = 0x43A66C31C68491C0,
+    GET_NUMBER_OF_PLAYERS               = 0x407C7F91DDB46C16,
+    GET_PLAYER_INDEX                    = 0xA5EDC40EF369B48D,
+    NETWORK_IS_PLAYER_ACTIVE            = 0xB8DFD30D6973E135,
     -- Input
     IS_USING_KEYBOARD_AND_MOUSE         = 0xA571D46727E2B718,
     GET_CONTROL_NORMAL                  = 0xEC3C9B8D5327B563,
@@ -50,6 +69,10 @@ local N = {
     SET_FOLLOW_VEHICLE_CAM_ZOOM_LEVEL   = 0x19464CB6E4078C8A,
     -- Timer
     GET_GAME_TIMER                      = 0x9CD27B0045628463,
+    -- Model
+    REQUEST_MODEL                       = 0x963D27A58DF860AC,
+    HAS_MODEL_LOADED                    = 0x98A4EB5D89A0C952,
+    SET_MODEL_AS_NO_LONGER_NEEDED       = 0xE532F5D78798DAAB,
 }
 
 -- ============================================================
@@ -584,6 +607,36 @@ local awdDriveBias      = 0.0
 -- Keyboard hotkey (virtual key code for C)
 local CYCLE_PRESET_VK   = 0x43  -- VK_C
 
+-- Ghost replay state
+local ghostEnabled      = false
+local ghostRecording    = false
+local ghostPlaying      = false
+local ghostFrames       = {}        -- recorded frames: { pos, rot, speed }
+local ghostPlayIndex    = 0
+local ghostVehicle      = nil       -- spawned ghost entity
+local ghostModelHash    = nil       -- model hash of recorded car
+local MAX_GHOST_FRAMES  = 6000     -- ~100 seconds at 60fps
+
+-- Tire wear state
+local tireWearEnabled   = true
+local tireWearAmount    = 1.0       -- 1.0 = full grip, 0.0 = no grip
+local TIRE_WEAR_RATE    = 0.00012   -- grip lost per tick while drifting
+local TIRE_RECOVER_RATE = 0.00035   -- grip recovered per tick driving straight
+local TIRE_WEAR_MIN     = 0.55      -- minimum grip floor (never fully bald)
+
+-- Tandem proximity scoring state
+local tandemEnabled     = true
+local tandemBonusActive = false
+local tandemPartner     = nil
+local tandemDistance     = 0.0
+local TANDEM_MAX_DIST   = 15.0     -- max distance for tandem bonus (meters)
+local TANDEM_MIN_DIST   = 2.0      -- too close = no bonus (collision zone)
+local TANDEM_MULTIPLIER = 2.0      -- max bonus multiplier at ideal distance
+
+-- Per-car tuning offsets: model hash -> { key = offset_value }
+local carTuningOffsets  = {}
+local editCarOffsets    = {}        -- currently editing offsets
+
 -- ============================================================
 -- CORE HELPERS
 -- ============================================================
@@ -743,7 +796,9 @@ local function updateDriftTracking(vehicle)
 
         -- Scoring: angle * speed * combo
         driftDuration = (now - driftStartTime) / 1000.0
-        local tickScore = (absAngle / 10.0) * (scoreSpeed / 30.0) * comboMultiplier * SCORE_MULTIPLIER
+        -- Tandem bonus (additive multiplier from nearby drifting player)
+        local tandemBonus = updateTandemScoring(vehicle)
+        local tickScore = (absAngle / 10.0) * (scoreSpeed / 30.0) * (comboMultiplier + tandemBonus) * SCORE_MULTIPLIER
         driftScore = driftScore + tickScore
 
         -- Grow combo over time
@@ -1240,6 +1295,290 @@ local function handleKeyboardHotkey()
 end
 
 -- ============================================================
+-- GHOST REPLAY SYSTEM
+-- ============================================================
+
+local function ghostRecordFrame(vehicle)
+    if not ghostRecording then return end
+    if #ghostFrames >= MAX_GHOST_FRAMES then
+        ghostRecording = false
+        notify.push('MikzDrift', 'Ghost recording full (' .. MAX_GHOST_FRAMES .. ' frames)')
+        return
+    end
+
+    local pos = invoker.call(N.GET_ENTITY_COORDS, vehicle, true).scr_vec3
+    local rot = invoker.call(N.GET_ENTITY_ROTATION, vehicle, 2).scr_vec3
+
+    table.insert(ghostFrames, {
+        x = pos.x, y = pos.y, z = pos.z,
+        rx = rot.x, ry = rot.y, rz = rot.z,
+    })
+end
+
+local function ghostStartRecording(vehicle)
+    ghostFrames = {}
+    ghostModelHash = invoker.call(N.GET_ENTITY_MODEL, vehicle).int
+    ghostRecording = true
+    ghostPlayIndex = 0
+    notify.push('MikzDrift', 'Ghost recording started')
+end
+
+local function ghostStopRecording()
+    ghostRecording = false
+    if #ghostFrames > 0 then
+        notify.push('MikzDrift', 'Ghost recorded: ' .. #ghostFrames .. ' frames')
+    end
+end
+
+local function ghostDeleteVehicle()
+    if ghostVehicle then
+        if invoker.call(N.DOES_ENTITY_EXIST, ghostVehicle).bool then
+            invoker.call(N.DELETE_VEHICLE, ghostVehicle)
+        end
+        ghostVehicle = nil
+    end
+end
+
+local function ghostSpawnVehicle()
+    if not ghostModelHash or #ghostFrames == 0 then return false end
+
+    ghostDeleteVehicle()
+
+    -- Request model
+    invoker.call(N.REQUEST_MODEL, ghostModelHash)
+    if not invoker.call(N.HAS_MODEL_LOADED, ghostModelHash).bool then
+        return false
+    end
+
+    local first = ghostFrames[1]
+    ghostVehicle = invoker.call(N.CREATE_VEHICLE,
+        ghostModelHash,
+        first.x, first.y, first.z,
+        first.rz,
+        false, false
+    ).int
+
+    if ghostVehicle and ghostVehicle ~= 0 then
+        -- Make ghost transparent, non-solid, invincible
+        invoker.call(N.SET_ENTITY_ALPHA, ghostVehicle, 100, false)
+        invoker.call(N.SET_ENTITY_COLLISION, ghostVehicle, false, false)
+        invoker.call(N.SET_ENTITY_INVINCIBLE, ghostVehicle, true)
+        invoker.call(N.FREEZE_ENTITY_POSITION, ghostVehicle, true)
+        invoker.call(N.SET_MODEL_AS_NO_LONGER_NEEDED, ghostModelHash)
+        return true
+    end
+    return false
+end
+
+local function ghostStartPlayback()
+    if #ghostFrames == 0 then
+        notify.push('MikzDrift', 'No ghost recorded')
+        return
+    end
+    if not ghostSpawnVehicle() then
+        notify.push('MikzDrift', 'Failed to spawn ghost vehicle')
+        return
+    end
+    ghostPlaying = true
+    ghostPlayIndex = 1
+    notify.push('MikzDrift', 'Ghost playback started')
+end
+
+local function ghostStopPlayback()
+    ghostPlaying = false
+    ghostPlayIndex = 0
+    ghostDeleteVehicle()
+end
+
+local function ghostUpdatePlayback()
+    if not ghostPlaying or not ghostVehicle then return end
+
+    ghostPlayIndex = ghostPlayIndex + 1
+    if ghostPlayIndex > #ghostFrames then
+        -- Loop back to start
+        ghostPlayIndex = 1
+    end
+
+    local frame = ghostFrames[ghostPlayIndex]
+    if frame then
+        invoker.call(N.FREEZE_ENTITY_POSITION, ghostVehicle, false)
+        invoker.call(N.SET_ENTITY_COORDS_NO_OFFSET, ghostVehicle, frame.x, frame.y, frame.z, false, false, false)
+        invoker.call(N.SET_ENTITY_ROTATION, ghostVehicle, frame.rx, frame.ry, frame.rz, 2, true)
+        invoker.call(N.FREEZE_ENTITY_POSITION, ghostVehicle, true)
+    end
+end
+
+-- ============================================================
+-- TIRE WEAR SIMULATION
+-- ============================================================
+
+local function updateTireWear(vehicle)
+    if not tireWearEnabled or not driftActive then
+        tireWearAmount = 1.0
+        return
+    end
+
+    local absAngle = math.abs(currentAngle)
+    local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
+
+    if absAngle > DRIFT_ANGLE_THRESHOLD and speed > 5.0 then
+        -- Degrade grip: faster at higher angles and speed
+        local wearFactor = (absAngle / 45.0) * (speed / 20.0)
+        tireWearAmount = tireWearAmount - TIRE_WEAR_RATE * wearFactor
+        tireWearAmount = math.max(TIRE_WEAR_MIN, tireWearAmount)
+    else
+        -- Recover grip when driving straight
+        tireWearAmount = tireWearAmount + TIRE_RECOVER_RATE
+        tireWearAmount = math.min(1.0, tireWearAmount)
+    end
+
+    -- Apply wear: reduce traction proportionally to wear
+    if originalHandling and originalHandling.tractionMin then
+        local preset = PRESETS[currentPreset]
+        local baseMult = preset.mult and preset.mult.tractionMin or 1.0
+        local wornMult = baseMult * tireWearAmount
+        local stockVal = originalHandling.tractionMin
+        invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+            joaat('CHandlingData'), joaat('fTractionCurveMin'), stockVal * wornMult)
+
+        local baseMax = preset.mult and preset.mult.tractionMax or 1.0
+        local wornMax = baseMax * tireWearAmount
+        local stockMax = originalHandling.tractionMax
+        invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+            joaat('CHandlingData'), joaat('fTractionCurveMax'), stockMax * wornMax)
+    end
+end
+
+-- ============================================================
+-- TANDEM PROXIMITY SCORING
+-- ============================================================
+
+local function findNearestDriftingPlayer(myVehicle)
+    local myPos = invoker.call(N.GET_ENTITY_COORDS, myVehicle, true).scr_vec3
+    local nearest = nil
+    local nearestDist = TANDEM_MAX_DIST + 1
+
+    -- Iterate through players
+    for i = 0, 31 do
+        if invoker.call(N.NETWORK_IS_PLAYER_ACTIVE, i).bool then
+            local playerPed = invoker.call(N.GET_PLAYER_PED, i).int
+            local myPed = invoker.call(N.PLAYER_PED_ID).int
+
+            if playerPed ~= myPed and invoker.call(N.IS_PED_IN_ANY_VEHICLE, playerPed, false).bool then
+                local theirVehicle = invoker.call(N.GET_VEHICLE_PED_IS_IN, playerPed, false).int
+                local theirPos = invoker.call(N.GET_ENTITY_COORDS, theirVehicle, true).scr_vec3
+                local theirSpeed = invoker.call(N.GET_ENTITY_SPEED, theirVehicle).float
+
+                -- Distance check
+                local dx = myPos.x - theirPos.x
+                local dy = myPos.y - theirPos.y
+                local dz = myPos.z - theirPos.z
+                local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+                -- They must be moving fast enough (likely drifting)
+                if dist < nearestDist and theirSpeed > 8.0 then
+                    nearestDist = dist
+                    nearest = theirVehicle
+                end
+            end
+        end
+    end
+
+    return nearest, nearestDist
+end
+
+local function updateTandemScoring(vehicle)
+    if not tandemEnabled or not driftActive or not isDrifting then
+        tandemBonusActive = false
+        tandemPartner = nil
+        tandemDistance = 0.0
+        return 0.0
+    end
+
+    local partner, dist = findNearestDriftingPlayer(vehicle)
+
+    if partner and dist >= TANDEM_MIN_DIST and dist <= TANDEM_MAX_DIST then
+        tandemBonusActive = true
+        tandemPartner = partner
+        tandemDistance = dist
+
+        -- Bonus is higher when closer (but not too close)
+        -- Ideal distance is ~5-8m
+        local idealDist = 6.0
+        local proximity = 1.0 - math.abs(dist - idealDist) / TANDEM_MAX_DIST
+        proximity = clamp(proximity, 0.2, 1.0)
+
+        return TANDEM_MULTIPLIER * proximity
+    else
+        tandemBonusActive = false
+        tandemPartner = nil
+        tandemDistance = dist or 0.0
+        return 0.0
+    end
+end
+
+-- ============================================================
+-- PER-CAR TUNING OFFSETS
+-- ============================================================
+
+local function getCarOffsets(vehicle)
+    local hash = invoker.call(N.GET_ENTITY_MODEL, vehicle).int
+    if hash and carTuningOffsets[hash] then
+        return carTuningOffsets[hash]
+    end
+    return nil
+end
+
+local function setCarOffset(vehicle, key, value)
+    local hash = invoker.call(N.GET_ENTITY_MODEL, vehicle).int
+    if not hash or hash == 0 then return end
+    if not carTuningOffsets[hash] then
+        carTuningOffsets[hash] = {}
+    end
+    carTuningOffsets[hash][key] = value
+end
+
+local function clearCarOffsets(vehicle)
+    local hash = invoker.call(N.GET_ENTITY_MODEL, vehicle).int
+    if hash then
+        carTuningOffsets[hash] = nil
+    end
+end
+
+-- Apply per-car offsets on top of current handling
+-- Offsets are ADDITIVE to the multiplier (e.g. offset +0.05 on tractionMin
+-- means the final multiplier is preset_mult + 0.05)
+local function applyCarOffsets(vehicle)
+    if not originalHandling then return end
+
+    local offsets = getCarOffsets(vehicle)
+    if not offsets then return end
+
+    local preset = PRESETS[currentPreset]
+    for _, e in ipairs(HANDLING_FIELDS) do
+        local offset = offsets[e.key]
+        if offset and offset ~= 0 then
+            local stockVal = originalHandling[e.key]
+            if stockVal then
+                -- Start from preset value
+                local baseMult = 1.0
+                if preset.set and preset.set[e.key] ~= nil then
+                    -- For set values, offset adjusts the absolute value directly
+                    local baseVal = preset.set[e.key]
+                    invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                        joaat('CHandlingData'), joaat(e.field), baseVal + offset)
+                elseif preset.mult and preset.mult[e.key] then
+                    baseMult = preset.mult[e.key]
+                    local finalMult = baseMult + offset
+                    invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                        joaat('CHandlingData'), joaat(e.field), stockVal * finalMult)
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
 -- HUD RENDERING
 -- ============================================================
 
@@ -1394,6 +1733,52 @@ local function drawHUD()
         :color(color(130, 130, 130, 180))
         :scale(0.5)
         :draw()
+
+    -- Row 3: tire wear + tandem (only if enabled)
+    local row3Y = statsY + statsH + 2.0
+    local hasRow3 = tireWearEnabled or tandemBonusActive
+
+    if hasRow3 then
+        gui.rect(vec2(barX, row3Y), vec2(barW, 18.0))
+            :filled()
+            :color(color(10, 10, 10, 120))
+            :rounding(4.0)
+            :draw()
+
+        if tireWearEnabled then
+            local wearPct = math.floor(tireWearAmount * 100)
+            local wearColor = wearPct > 70 and color(80, 255, 80, 200)
+                or wearPct > 40 and color(255, 220, 50, 200)
+                or color(255, 60, 60, 200)
+            gui.text(string.format('Tires: %d%%', wearPct))
+                :position(vec2(barX + 10.0, row3Y + 2.0))
+                :color(wearColor)
+                :scale(0.5)
+                :draw()
+        end
+
+        if tandemBonusActive then
+            gui.text(string.format('TANDEM %.0fm', tandemDistance))
+                :position(vec2(barX + 120.0, row3Y + 2.0))
+                :color(color(255, 140, 50, 230))
+                :scale(0.5)
+                :draw()
+        end
+
+        if ghostRecording then
+            gui.text(string.format('REC %d', #ghostFrames))
+                :position(vec2(barX + 250.0, row3Y + 2.0))
+                :color(color(255, 50, 50, 230))
+                :scale(0.5)
+                :draw()
+        elseif ghostPlaying then
+            gui.text(string.format('GHOST %d/%d', ghostPlayIndex, #ghostFrames))
+                :position(vec2(barX + 250.0, row3Y + 2.0))
+                :color(color(150, 150, 255, 200))
+                :scale(0.5)
+                :draw()
+        end
+    end
 end
 
 -- ============================================================
@@ -1764,6 +2149,7 @@ local driftToggle = driftMenu:toggle('Enable Drift')
             originalHandling = saveHandling(vehicle)
             lastVehicle = vehicle
             applyDriftPreset(vehicle, PRESETS[currentPreset])
+            applyCarOffsets(vehicle)
             -- Apply AWD bias if set
             if awdDriveBias > 0 then
                 invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
@@ -1845,6 +2231,23 @@ assistMenu:button('Clear Remembered Cars')
         notify.push('MikzDrift', 'Cleared all remembered car presets')
     end)
 
+assistMenu:toggle('Tire Wear')
+    :tooltip('Tires lose grip the longer you drift, recover when driving straight')
+    :value(tireWearEnabled)
+    :event(menu.event.click, function(opt)
+        tireWearEnabled = opt.value
+        if not opt.value then tireWearAmount = 1.0 end
+        notify.push('MikzDrift', 'Tire wear: ' .. (opt.value and 'ON' or 'OFF'))
+    end)
+
+assistMenu:toggle('Tandem Scoring')
+    :tooltip('Bonus score when drifting near another player')
+    :value(tandemEnabled)
+    :event(menu.event.click, function(opt)
+        tandemEnabled = opt.value
+        notify.push('MikzDrift', 'Tandem scoring: ' .. (opt.value and 'ON' or 'OFF'))
+    end)
+
 -- ---- Visuals submenu ----
 local visualMenu = driftMenu:submenu('Visuals')
 
@@ -1906,6 +2309,105 @@ visualMenu:toggle('Drift Camera')
     :event(menu.event.click, function(opt)
         driftCameraEnabled = opt.value
         notify.push('MikzDrift', 'Drift camera: ' .. (opt.value and 'ON' or 'OFF'))
+    end)
+
+-- ---- Ghost Replay submenu ----
+local ghostMenu = driftMenu:submenu('Ghost Replay')
+
+ghostMenu:button('Start Recording')
+    :tooltip('Begin recording your drift line (must be drifting)')
+    :event(menu.event.click, function()
+        local vehicle = getPlayerVehicle()
+        if vehicle and driftActive then
+            ghostStartRecording(vehicle)
+        else
+            notify.push('MikzDrift', 'Enable drift on a vehicle first')
+        end
+    end)
+
+ghostMenu:button('Stop Recording')
+    :tooltip('Stop recording your drift line')
+    :event(menu.event.click, function()
+        ghostStopRecording()
+    end)
+
+ghostMenu:button('Play Ghost')
+    :tooltip('Spawn a transparent ghost car that replays your recorded line')
+    :event(menu.event.click, function()
+        ghostStartPlayback()
+    end)
+
+ghostMenu:button('Stop Ghost')
+    :tooltip('Remove the ghost car')
+    :event(menu.event.click, function()
+        ghostStopPlayback()
+        notify.push('MikzDrift', 'Ghost stopped')
+    end)
+
+ghostMenu:button('Clear Recording')
+    :tooltip('Delete the current ghost recording')
+    :event(menu.event.click, function()
+        ghostStopPlayback()
+        ghostFrames = {}
+        ghostModelHash = nil
+        notify.push('MikzDrift', 'Ghost recording cleared')
+    end)
+
+-- ---- Per-Car Offsets submenu ----
+local offsetMenu = driftMenu:submenu('Per-Car Tuning')
+
+-- Offset slider defs: { label, key, min, max, step, tooltip }
+local OFFSET_SLIDERS = {
+    { 'Traction Min',       'tractionMin',          -0.30, 0.30, 0.01, 'Grip offset (+ = more grip)' },
+    { 'Traction Max',       'tractionMax',          -0.30, 0.30, 0.01, 'Peak grip offset' },
+    { 'Traction Loss',      'tractionLossMult',     -0.50, 0.50, 0.05, 'Traction loss offset' },
+    { 'Drive Force',        'driveForce',           -0.30, 0.30, 0.05, 'Power offset' },
+    { 'Steering Lock',      'steeringLock',         -0.30, 0.30, 0.05, 'Steering angle offset' },
+    { 'Handbrake Force',    'handBrakeForce',       -0.50, 0.50, 0.05, 'Handbrake offset' },
+    { 'Suspension Force',   'suspForce',            -0.30, 0.30, 0.05, 'Suspension stiffness offset' },
+    { 'Anti-Roll Bar',      'antiRollBar',          -0.30, 0.30, 0.05, 'Anti-roll offset' },
+    { 'Mass',               'mass',                 -0.15, 0.15, 0.01, 'Weight offset' },
+}
+
+for _, slider in ipairs(OFFSET_SLIDERS) do
+    local label, key, sMin, sMax, step, tip = slider[1], slider[2], slider[3], slider[4], slider[5], slider[6]
+    local steps = math.floor((sMax - sMin) / step + 0.5)
+    local centerIdx = math.floor((0 - sMin) / step + 0.5) -- 0 = no offset
+
+    offsetMenu:slider_int(label, 0, steps, centerIdx)
+        :tooltip(tip .. string.format(' (%.2f to +%.2f)', sMin, sMax))
+        :event(menu.event.click, function(opt)
+            local val = sMin + opt.value * step
+            val = math.floor(val * 10000 + 0.5) / 10000
+            local vehicle = getPlayerVehicle()
+            if vehicle then
+                setCarOffset(vehicle, key, val)
+                if driftActive then
+                    applyDriftPreset(vehicle, PRESETS[currentPreset])
+                    applyCarOffsets(vehicle)
+                end
+            end
+        end)
+end
+
+offsetMenu:button('Clear This Car\'s Offsets')
+    :tooltip('Remove all tuning offsets for the current car model')
+    :event(menu.event.click, function()
+        local vehicle = getPlayerVehicle()
+        if vehicle then
+            clearCarOffsets(vehicle)
+            if driftActive then
+                applyDriftPreset(vehicle, PRESETS[currentPreset])
+            end
+            notify.push('MikzDrift', 'Car offsets cleared')
+        end
+    end)
+
+offsetMenu:button('Clear All Car Offsets')
+    :tooltip('Remove tuning offsets for all car models')
+    :event(menu.event.click, function()
+        carTuningOffsets = {}
+        notify.push('MikzDrift', 'All car offsets cleared')
     end)
 
 -- ---- HUD submenu ----
@@ -1981,6 +2483,7 @@ notify.push('MikzDrift', 'v3.0 Loaded | Works on any car | Use the menu to enabl
 -- Cleanup on script unload: stop smoke, restore handling
 this:event(this.event.unload, function()
     stopSmoke()
+    ghostStopPlayback()
     if lastVehicle and originalHandling then
         restoreHandling(lastVehicle)
     end
@@ -2003,6 +2506,7 @@ util.create_thread(function()
                     originalHandling = saveHandling(vehicle)
                     lastVehicle = vehicle
                     applyDriftPreset(vehicle, PRESETS[currentPreset])
+                    applyCarOffsets(vehicle)
                     -- Apply AWD bias if set
                     if awdDriveBias > 0 then
                         invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
@@ -2038,17 +2542,25 @@ util.create_thread(function()
                 doThrottleModulation(vehicle)
                 doHandbrakeBoost(vehicle)
                 doBackfire(vehicle)
+                updateTireWear(vehicle)
                 updateTireSmoke(vehicle)
                 updateDriftCamera(vehicle)
+
+                -- Ghost recording (record while drifting)
+                ghostRecordFrame(vehicle)
             end
         elseif not vehicle and driftActive then
             disableDrift()
+            ghostStopPlayback()
             driftToggle.value = false
             lastCheckedVehicle = nil
             notify.push('MikzDrift', 'Left vehicle - drift disabled')
         elseif not vehicle then
             lastCheckedVehicle = nil
         end
+
+        -- Ghost playback runs independently of drift state
+        ghostUpdatePlayback()
 
         -- Keyboard hotkey (works anytime)
         handleKeyboardHotkey()

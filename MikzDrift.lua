@@ -559,8 +559,6 @@ local driftScore        = 0
 local comboMultiplier   = 1.0
 local comboTimer        = -1
 local totalScore        = 0
-local bestAngle         = 0.0
-local bestCombo         = 0
 
 -- Session stats
 local sessionStats = {
@@ -586,10 +584,7 @@ local smokeColor        = { r = 255, g = 255, b = 255 }
 local handbrakeBoostActive = false
 local handbrakeBoostTimer  = 0
 
--- Drift camera state
-local defaultFOV        = 50.0
-local driftFOV          = 60.0
-local currentFOVTarget  = 50.0
+-- (drift camera uses gameplay cam natives directly, no state needed)
 
 -- Backfire state
 local backfirePtfxLoaded = false
@@ -599,8 +594,8 @@ local backfireCooldown   = 0
 -- AWD drift bias (0.0 = RWD, 0.1 = 10/90, etc.)
 local awdDriveBias      = 0.0
 
--- Keyboard hotkey
-local CYCLE_PRESET_KEY  = 0x43  -- C key (default)
+-- Keyboard hotkey (virtual key code for C)
+local CYCLE_PRESET_VK   = 0x43  -- VK_C
 
 -- ============================================================
 -- CORE HELPERS
@@ -674,6 +669,8 @@ local function resetDriftState()
     comboMultiplier = 1.0
     comboTimer = -1
     driftDuration = 0.0
+    handbrakeBoostActive = false
+    lastThrottle = 0.0
 end
 
 -- Forward declaration: disableDrift is defined after stopSmoke
@@ -754,9 +751,6 @@ local function updateDriftTracking(vehicle)
         if absAngle > peakAngle then
             peakAngle = absAngle
         end
-        if absAngle > bestAngle then
-            bestAngle = absAngle
-        end
 
         -- Scoring: angle * speed * combo
         driftDuration = (now - driftStartTime) / 1000.0
@@ -772,10 +766,6 @@ local function updateDriftTracking(vehicle)
             isDrifting = false
             comboTimer = now
             totalScore = math.min(totalScore + math.floor(driftScore), 999999999)
-
-            if math.floor(driftScore) > bestCombo then
-                bestCombo = math.floor(driftScore)
-            end
 
             -- Session stats + personal best notifications
             onDriftEnd(driftDuration, driftScore, peakAngle)
@@ -1008,9 +998,11 @@ updateSessionStats = function(vehicle)
         sessionStats.fastestSpeed = speed
     end
 
-    -- Angle sampling for average
-    sessionStats.totalAngle = sessionStats.totalAngle + absAngle
-    sessionStats.angleSamples = sessionStats.angleSamples + 1
+    -- Angle sampling for average (cap to prevent overflow on long sessions)
+    if sessionStats.angleSamples < 10000000 then
+        sessionStats.totalAngle = sessionStats.totalAngle + absAngle
+        sessionStats.angleSamples = sessionStats.angleSamples + 1
+    end
 end
 
 onDriftStart = function()
@@ -1042,9 +1034,9 @@ onDriftEnd = function(duration, score, peak)
         newBestCombo = true
     end
 
-    -- Personal best notifications
-    if personalBestNotify then
-        if newBestAngle then
+    -- Personal best notifications (skip trivial first-drift bests)
+    if personalBestNotify and sessionStats.totalDrifts > 1 then
+        if newBestAngle and peak > 15.0 then
             notify.push('MikzDrift', string.format('New best angle! %.1f\xC2\xB0', peak), { time = 3000 })
         end
         if newBestCombo and math.floor(score) > 500 then
@@ -1113,21 +1105,19 @@ end
 -- ============================================================
 
 local function updateDriftCamera(vehicle)
-    if not driftCameraEnabled or not driftActive then
-        -- Smoothly return to default FOV
-        currentFOVTarget = defaultFOV
-        return
-    end
+    if not driftCameraEnabled or not driftActive then return end
 
     local absAngle = math.abs(currentAngle)
     local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
 
     if absAngle > 10.0 and speed > 5.0 then
-        -- Widen FOV based on drift intensity
-        local fovAdd = clamp(absAngle / 8.0, 0.0, 12.0)
-        currentFOVTarget = defaultFOV + fovAdd
-    else
-        currentFOVTarget = defaultFOV
+        -- Lock camera to closest zoom for a tighter chase feel
+        invoker.call(N.SET_FOLLOW_VEHICLE_CAM_ZOOM_LEVEL, 0)
+
+        -- Offset camera heading slightly towards the drift direction
+        -- This creates a looser, more cinematic follow
+        local headingOffset = clamp(currentAngle * 0.08, -6.0, 6.0)
+        invoker.call(N.SET_GAMEPLAY_CAM_RELATIVE_HEADING, headingOffset)
     end
 end
 
@@ -1230,14 +1220,19 @@ local function handleKeyboardHotkey()
     -- C key to cycle presets (only when drift is active)
     if not driftActive then return end
 
-    local pressed = invoker.call(N.IS_CONTROL_JUST_PRESSED, 0, CYCLE_PRESET_KEY).bool
-    if pressed then
+    local key = input.keyboard(CYCLE_PRESET_VK)
+    if key.just_pressed then
         currentPreset = currentPreset + 1
         if currentPreset > #PRESETS then currentPreset = 1 end
 
         local vehicle = getPlayerVehicle()
         if vehicle then
             applyDriftPreset(vehicle, PRESETS[currentPreset])
+            -- Re-apply AWD bias after preset switch
+            if awdDriveBias > 0 then
+                invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                    joaat('CHandlingData'), joaat('fDriveBiasFront'), awdDriveBias)
+            end
             if autoApplyEnabled then
                 rememberCarPreset(vehicle, currentPreset)
             end
@@ -1444,6 +1439,11 @@ presetSelectorOpt = presetsMenu:combo_int('Active Preset', presetList, menu.type
             local vehicle = getPlayerVehicle()
             if vehicle then
                 applyDriftPreset(vehicle, PRESETS[currentPreset])
+                -- Re-apply AWD bias after preset switch
+                if awdDriveBias > 0 then
+                    invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                        joaat('CHandlingData'), joaat('fDriveBiasFront'), awdDriveBias)
+                end
                 notify.push('MikzDrift', 'Applied: ' .. PRESETS[currentPreset].name)
             end
         end
@@ -1942,8 +1942,6 @@ hudMenu:button('Reset Score')
     :tooltip('Reset total score and best records')
     :event(menu.event.click, function()
         totalScore = 0
-        bestAngle = 0.0
-        bestCombo = 0
         driftScore = 0
         comboMultiplier = 1.0
         notify.push('MikzDrift', 'Score reset!')
@@ -1954,8 +1952,6 @@ hudMenu:button('Reset Session Stats')
     :event(menu.event.click, function()
         resetSessionStats()
         totalScore = 0
-        bestAngle = 0.0
-        bestCombo = 0
         driftScore = 0
         comboMultiplier = 1.0
         notify.push('MikzDrift', 'Session stats reset!')

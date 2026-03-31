@@ -351,7 +351,6 @@ local PRESETS = {
             suspBiasFront       = 0.88,
             antiRollBar         = 0.25,
             antiRollBiasFront   = 0.93,
-            downforce           = 0.00,
             dragCoeff           = 0.60,
             camberStiffness     = 0.20,
             rollCenterFront     = 0.80,
@@ -361,6 +360,7 @@ local PRESETS = {
         },
         set = {
             driveBiasFront      = 0.0,
+            downforce           = 0.0,      -- force to zero (not multiplied)
         },
         assistStrength  = 0.25,
         assistAngleMin  = 8.0,
@@ -392,7 +392,7 @@ local driftStartTime    = 0
 local driftDuration     = 0.0
 local driftScore        = 0
 local comboMultiplier   = 1.0
-local comboTimer        = 0
+local comboTimer        = -1    -- -1 = uninitialized (avoids stale comparison with game time)
 local totalScore        = 0
 local bestAngle         = 0.0
 local bestCombo         = 0
@@ -459,17 +459,33 @@ local function applyDriftPreset(vehicle, preset)
 end
 
 -- Restore stock handling values directly (no multiplier math)
+-- Does NOT touch driftActive — caller is responsible for that.
 local function restoreHandling(vehicle)
-    if originalHandling then
+    if not originalHandling then return end
+    -- Only write to vehicle if it still exists
+    if vehicle and invoker.call(N.GET_ENTITY_SPEED, vehicle) then
         for _, e in ipairs(HANDLING_FIELDS) do
             if originalHandling[e.key] then
                 invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle, joaat('CHandlingData'), joaat(e.field), originalHandling[e.key])
             end
         end
-        originalHandling = nil
-        driftActive = false
     end
+    originalHandling = nil
 end
+
+-- Reset all drift tracking state (angle, score, combo, flags)
+local function resetDriftState()
+    isDrifting = false
+    currentAngle = 0.0
+    peakAngle = 0.0
+    driftScore = 0
+    comboMultiplier = 1.0
+    comboTimer = -1
+    driftDuration = 0.0
+end
+
+-- Forward declaration: disableDrift is defined after stopSmoke
+local disableDrift
 
 local function clamp(val, lo, hi)
     return math.max(lo, math.min(hi, val))
@@ -526,7 +542,7 @@ local function updateDriftTracking(vehicle)
             isDrifting = true
             driftStartTime = now
             -- Continue combo if within timeout
-            if now - comboTimer > COMBO_TIMEOUT then
+            if comboTimer < 0 or (now - comboTimer) > COMBO_TIMEOUT then
                 comboMultiplier = 1.0
                 driftScore = 0
             end
@@ -553,7 +569,7 @@ local function updateDriftTracking(vehicle)
         if isDrifting then
             isDrifting = false
             comboTimer = now
-            totalScore = totalScore + math.floor(driftScore)
+            totalScore = math.min(totalScore + math.floor(driftScore), 999999999)
 
             if math.floor(driftScore) > bestCombo then
                 bestCombo = math.floor(driftScore)
@@ -563,7 +579,7 @@ local function updateDriftTracking(vehicle)
         end
 
         -- Reset combo after timeout
-        if now - comboTimer > COMBO_TIMEOUT and not isDrifting then
+        if comboTimer >= 0 and (now - comboTimer) > COMBO_TIMEOUT and not isDrifting then
             if driftScore > 0 then
                 driftScore = 0
                 comboMultiplier = 1.0
@@ -581,7 +597,13 @@ local PTFX_NAME  = 'exp_grd_bzgas_smoke'
 local WHEEL_BONES = { 'wheel_lr', 'wheel_rr' }
 
 local function loadPtfx()
-    if ptfxLoaded then return true end
+    -- Always verify the asset is still loaded (game can stream it out)
+    if invoker.call(N.HAS_NAMED_PTFX_ASSET_LOADED, PTFX_DICT).bool then
+        ptfxLoaded = true
+        return true
+    end
+    -- Asset was unloaded or never loaded — request it
+    ptfxLoaded = false
     invoker.call(N.REQUEST_NAMED_PTFX_ASSET, PTFX_DICT)
     if invoker.call(N.HAS_NAMED_PTFX_ASSET_LOADED, PTFX_DICT).bool then
         ptfxLoaded = true
@@ -622,6 +644,18 @@ local function stopSmoke()
         invoker.call(N.STOP_PARTICLE_FX_LOOPED, handle, false)
     end
     smokeHandles = {}
+end
+
+-- Full cleanup: restore handling, stop effects, reset state
+-- Defined here (after stopSmoke) to avoid forward reference issues
+disableDrift = function()
+    if lastVehicle then
+        restoreHandling(lastVehicle)
+    end
+    stopSmoke()
+    driftActive = false
+    lastVehicle = nil
+    resetDriftState()
 end
 
 local function updateSmokeScale(absAngle, speed)
@@ -907,14 +941,10 @@ local driftToggle = driftMenu:toggle('Enable Drift')
             lastVehicle = vehicle
             applyDriftPreset(vehicle, PRESETS[currentPreset])
             driftActive = true
+            resetDriftState()
             notify.push('MikzDrift', 'Drift ON - ' .. PRESETS[currentPreset].name)
         else
-            if lastVehicle then
-                restoreHandling(lastVehicle)
-            end
-            stopSmoke()
-            driftActive = false
-            lastVehicle = nil
+            disableDrift()
             notify.push('MikzDrift', 'Drift OFF - Handling restored')
         end
     end)
@@ -1009,11 +1039,8 @@ driftMenu:button('Restore Original Handling')
     :tooltip('Restore stock handling and disable drift')
     :event(menu.event.click, function()
         if lastVehicle and originalHandling then
-            restoreHandling(lastVehicle)
-            stopSmoke()
-            driftActive = false
+            disableDrift()
             driftToggle.value = false
-            lastVehicle = nil
             notify.push('MikzDrift', 'Original handling restored')
         else
             notify.push('MikzDrift', 'No drift preset active')
@@ -1049,13 +1076,11 @@ local function handleControllerInput()
             applyDriftPreset(vehicle, PRESETS[currentPreset])
             driftActive = true
             driftToggle.value = true
+            resetDriftState()
             notify.push('MikzDrift', 'Drift ON - ' .. PRESETS[currentPreset].name)
         else
-            restoreHandling(lastVehicle or vehicle)
-            stopSmoke()
-            driftActive = false
+            disableDrift()
             driftToggle.value = false
-            lastVehicle = nil
             notify.push('MikzDrift', 'Drift OFF')
         end
         padCooldown = now + 300
@@ -1115,24 +1140,37 @@ end
 
 notify.push('MikzDrift', 'v2.1 Loaded | Works on any car | D-Pad controls', { time = 5000 })
 
+-- Cleanup on script unload: stop smoke, restore handling
+this:event(this.event.unload, function()
+    stopSmoke()
+    if lastVehicle and originalHandling then
+        restoreHandling(lastVehicle)
+    end
+end)
+
 util.create_thread(function()
     while true do
         handleControllerInput()
 
         local vehicle = getPlayerVehicle()
+
         if vehicle and driftActive then
-            updateDriftTracking(vehicle)
-            doCounterSteerAssist(vehicle)
-            doThrottleModulation(vehicle)
-            updateTireSmoke(vehicle)
+            -- Detect vehicle swap: player got into a different car
+            if lastVehicle and vehicle ~= lastVehicle then
+                -- Restore old car's handling, disable drift
+                disableDrift()
+                driftToggle.value = false
+                notify.push('MikzDrift', 'Switched vehicle - drift disabled')
+            else
+                updateDriftTracking(vehicle)
+                doCounterSteerAssist(vehicle)
+                doThrottleModulation(vehicle)
+                updateTireSmoke(vehicle)
+            end
         elseif not vehicle and driftActive then
-            driftActive = false
+            -- Player left the vehicle entirely
+            disableDrift()
             driftToggle.value = false
-            originalHandling = nil
-            lastVehicle = nil
-            stopSmoke()
-            isDrifting = false
-            currentAngle = 0.0
             notify.push('MikzDrift', 'Left vehicle - drift disabled')
         end
 

@@ -2003,11 +2003,19 @@ for _, category in ipairs(SLIDER_DEFS) do
         end
         defaultIdx = math.max(0, math.min(steps, defaultIdx))
 
-        catMenu:slider_int(label, 0, steps, defaultIdx)
+        -- Build value list for combo selector
+        local valList = {}
+        for vi = 0, steps do
+            local v = sMin + vi * step
+            v = math.floor(v * 10000 + 0.5) / 10000
+            valList[vi + 1] = { string.format('%.2f', v), vi }
+        end
+
+        catMenu:combo_int(label, valList, menu.type.scroll)
             :tooltip(tip .. string.format(' (%.2f - %.2f)', sMin, sMax))
             :event(menu.event.click, function(opt)
-                local val = sMin + opt.value * step
-                val = math.floor(val * 10000 + 0.5) / 10000 -- round to 4 decimals
+                local val = sMin + opt.list:at(opt.value).value * step
+                val = math.floor(val * 10000 + 0.5) / 10000
                 if isRootKey then
                     editPreset[key] = val
                 else
@@ -2113,11 +2121,19 @@ createMenu:button('Save Preset')
         end
     end)
 
--- Preset name input (using a text option)
-createMenu:text_input('Preset Name', editPreset.name)
-    :tooltip('Set the name for your custom preset')
+-- Preset name selector (predefined names since text_input may not be available)
+local presetNameOptions = {
+    { 'My Preset', 1 }, { 'Custom 1', 2 }, { 'Custom 2', 3 }, { 'Custom 3', 4 },
+    { 'Street Pro', 5 }, { 'Touge Pro', 6 }, { 'Tandem Pro', 7 }, { 'Missile Pro', 8 },
+    { 'Comp Pro', 9 }, { 'Gymkhana Pro', 10 }, { 'Daily', 11 }, { 'Track', 12 },
+}
+local presetNameValues = {}
+for _, v in ipairs(presetNameOptions) do presetNameValues[v[2]] = v[1] end
+
+createMenu:combo_int('Preset Name', presetNameOptions, menu.type.scroll)
+    :tooltip('Choose a name for your custom preset')
     :event(menu.event.click, function(opt)
-        editPreset.name = opt.value
+        editPreset.name = presetNameValues[opt.list:at(opt.value).value] or 'My Preset'
     end)
 
 -- ---- Manage Saved submenu ----
@@ -2241,10 +2257,15 @@ assistMenu:toggle('Handbrake Boost')
     end)
 
 -- AWD drift option
-assistMenu:slider_int('Drive Bias (AWD)', 0, 10, 0)
-    :tooltip('0 = Pure RWD, 1-10 = front drive % (e.g. 2 = 20/80 AWD split)')
+local awdList = {}
+for ai = 0, 10 do
+    local label = ai == 0 and 'RWD' or string.format('%d/%d AWD', ai * 10, 100 - ai * 10)
+    awdList[ai + 1] = { label, ai }
+end
+assistMenu:combo_int('Drive Bias (AWD)', awdList, menu.type.scroll)
+    :tooltip('RWD = Pure rear-wheel, AWD = front/rear split')
     :event(menu.event.click, function(opt)
-        awdDriveBias = opt.value / 10.0
+        awdDriveBias = opt.list:at(opt.value).value / 10.0
         -- Update the driveBiasFront override in all presets' set tables
         -- and re-apply if drift is active
         if driftActive then
@@ -2419,10 +2440,18 @@ for _, slider in ipairs(OFFSET_SLIDERS) do
     local steps = math.floor((sMax - sMin) / step + 0.5)
     local centerIdx = math.floor((0 - sMin) / step + 0.5) -- 0 = no offset
 
-    offsetMenu:slider_int(label, 0, steps, centerIdx)
+    -- Build value list for combo selector
+    local offsetValList = {}
+    for oi = 0, steps do
+        local v = sMin + oi * step
+        v = math.floor(v * 10000 + 0.5) / 10000
+        offsetValList[oi + 1] = { string.format('%+.2f', v), oi }
+    end
+
+    offsetMenu:combo_int(label, offsetValList, menu.type.scroll)
         :tooltip(tip .. string.format(' (%.2f to +%.2f)', sMin, sMax))
         :event(menu.event.click, function(opt)
-            local val = sMin + opt.value * step
+            local val = sMin + opt.list:at(opt.value).value * step
             val = math.floor(val * 10000 + 0.5) / 10000
             local vehicle = getPlayerVehicle()
             if vehicle then

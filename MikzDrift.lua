@@ -388,7 +388,19 @@ local PRESETS = {
 -- ============================================================
 
 local PATH_SEP = package.config:sub(1, 1) -- '\\' on Windows, '/' on Unix
-local SCRIPT_DIR = this.dir():gsub('[/\\]$', '') -- strip trailing separator
+
+-- Derive script directory from this script's file path
+-- Lexis provides the script path via debug info since this.dir() is not available
+local SCRIPT_DIR
+do
+    local info = debug.getinfo(1, 'S')
+    local src = info and info.source or ''
+    -- Strip the leading '@' that Lua adds to file paths
+    src = src:gsub('^@', '')
+    -- Extract directory from full file path
+    SCRIPT_DIR = src:match('^(.*)[/\\]') or '.'
+end
+
 local SAVE_DIR = SCRIPT_DIR .. PATH_SEP .. 'MikzDrift' .. PATH_SEP .. 'presets'
 
 -- Ensure save directory exists

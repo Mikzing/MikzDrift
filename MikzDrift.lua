@@ -2234,7 +2234,6 @@ local assistMenu = driftMenu:submenu('Assists & Tuning')
 
 assistMenu:toggle('Counter-Steer Assist')
     :tooltip('Auto counter-steer on controller (per-preset strength)')
-    :value(counterSteerEnabled)
     :event(menu.event.click, function(opt)
         counterSteerEnabled = opt.value
         notify.push('MikzDrift', 'Counter-steer: ' .. (opt.value and 'ON' or 'OFF'))
@@ -2242,7 +2241,6 @@ assistMenu:toggle('Counter-Steer Assist')
 
 assistMenu:toggle('Throttle Modulation')
     :tooltip('Helps maintain speed through high-angle drifts on controller')
-    :value(throttleModEnabled)
     :event(menu.event.click, function(opt)
         throttleModEnabled = opt.value
         notify.push('MikzDrift', 'Throttle mod: ' .. (opt.value and 'ON' or 'OFF'))
@@ -2250,7 +2248,6 @@ assistMenu:toggle('Throttle Modulation')
 
 assistMenu:toggle('Handbrake Boost')
     :tooltip('Extra kick when pulling handbrake to help initiate drifts')
-    :value(handbrakeBoostEnabled)
     :event(menu.event.click, function(opt)
         handbrakeBoostEnabled = opt.value
         notify.push('MikzDrift', 'Handbrake boost: ' .. (opt.value and 'ON' or 'OFF'))
@@ -2284,7 +2281,6 @@ assistMenu:combo_int('Drive Bias (AWD)', awdList, menu.type.scroll)
 
 assistMenu:toggle('Auto-Apply Per Car')
     :tooltip('Remember which preset you used on each car model and auto-apply')
-    :value(autoApplyEnabled)
     :event(menu.event.click, function(opt)
         autoApplyEnabled = opt.value
         notify.push('MikzDrift', 'Auto-apply: ' .. (opt.value and 'ON' or 'OFF'))
@@ -2299,7 +2295,6 @@ assistMenu:button('Clear Remembered Cars')
 
 assistMenu:toggle('Tire Wear')
     :tooltip('Tires lose grip the longer you drift, recover when driving straight')
-    :value(tireWearEnabled)
     :event(menu.event.click, function(opt)
         tireWearEnabled = opt.value
         if not opt.value then tireWearAmount = 1.0 end
@@ -2308,7 +2303,6 @@ assistMenu:toggle('Tire Wear')
 
 assistMenu:toggle('Tandem Scoring')
     :tooltip('Bonus score when drifting near another player')
-    :value(tandemEnabled)
     :event(menu.event.click, function(opt)
         tandemEnabled = opt.value
         notify.push('MikzDrift', 'Tandem scoring: ' .. (opt.value and 'ON' or 'OFF'))
@@ -2319,7 +2313,6 @@ local visualMenu = driftMenu:submenu('Visuals')
 
 visualMenu:toggle('Tire Smoke')
     :tooltip('Rear tire smoke during drift')
-    :value(tireSmokeEnabled)
     :event(menu.event.click, function(opt)
         tireSmokeEnabled = opt.value
         if not opt.value then stopSmoke() end
@@ -2328,7 +2321,6 @@ visualMenu:toggle('Tire Smoke')
 
 visualMenu:toggle('Angle-Based Smoke Color')
     :tooltip('Smoke changes color with drift angle (white -> yellow -> orange -> red)')
-    :value(angleSmokeColorEnabled)
     :event(menu.event.click, function(opt)
         angleSmokeColorEnabled = opt.value
         if not opt.value then stopSmoke() end -- reset to static color
@@ -2363,7 +2355,6 @@ visualMenu:combo_int('Smoke Color (Static)', smokeColorList, menu.type.scroll)
 
 visualMenu:toggle('Backfire / Anti-Lag')
     :tooltip('Exhaust pops on throttle lift during drifts')
-    :value(backfireEnabled)
     :event(menu.event.click, function(opt)
         backfireEnabled = opt.value
         notify.push('MikzDrift', 'Backfire: ' .. (opt.value and 'ON' or 'OFF'))
@@ -2371,7 +2362,6 @@ visualMenu:toggle('Backfire / Anti-Lag')
 
 visualMenu:toggle('Drift Camera')
     :tooltip('Wider FOV during drifts for a cinematic feel')
-    :value(driftCameraEnabled)
     :event(menu.event.click, function(opt)
         driftCameraEnabled = opt.value
         notify.push('MikzDrift', 'Drift camera: ' .. (opt.value and 'ON' or 'OFF'))
@@ -2489,21 +2479,18 @@ local hudMenu = driftMenu:submenu('HUD & Scoring')
 
 hudMenu:toggle('Show HUD')
     :tooltip('Display drift HUD with angle, speed, score, and session stats')
-    :value(hudEnabled)
     :event(menu.event.click, function(opt)
         hudEnabled = opt.value
     end)
 
 hudMenu:toggle('Angle Tracker')
     :tooltip('Track drift angle and score combos')
-    :value(angleTrackEnabled)
     :event(menu.event.click, function(opt)
         angleTrackEnabled = opt.value
     end)
 
 hudMenu:toggle('Personal Best Notifications')
     :tooltip('Show popup when you beat your best angle or combo')
-    :value(personalBestNotify)
     :event(menu.event.click, function(opt)
         personalBestNotify = opt.value
     end)

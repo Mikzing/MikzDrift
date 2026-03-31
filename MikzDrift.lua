@@ -1,5 +1,5 @@
 -- ============================================================
--- MikzDrift v2.1 - FiveM-Style Drift Preset Script for Lexis
+-- MikzDrift v3.0 - FiveM-Style Drift Preset Script for Lexis
 -- Multiplier-based system: works on every car in GTA Online
 -- No custom keybinds — drive normally, control everything via menu
 -- ============================================================
@@ -59,6 +59,21 @@ local N = {
     PLAY_SOUND_FROM_ENTITY          = 0xE65F427EB70AB1ED,
     GET_SOUND_ID                    = 0x430386F9BF80B45C,
     RELEASE_SOUND_ID                = 0x353FC880830B88FA,
+    GET_ENTITY_MODEL                = 0x9F47B058362C84B5,
+    SET_GAMEPLAY_CAM_RELATIVE_HEADING = 0xB4EC2312F4E5B1F1,
+    SET_GAMEPLAY_CAM_RELATIVE_PITCH = 0x6D0858B8EDFA2BCD,
+    SET_CAM_ACTIVE                  = 0x026FB97D0A425F84,
+    RENDER_SCRIPT_CAMS              = 0x07E5B515DB0636FC,
+    CREATE_CAM_WITH_PARAMS          = 0xB51194800B257161,
+    SET_CAM_FOV                     = 0xB13C14F66A00D047,
+    SET_CAM_NEAR_CLIP               = 0xC7848EFCCC545182,
+    DESTROY_CAM                     = 0x865908C81A2C22E9,
+    SET_FOLLOW_VEHICLE_CAM_VIEW_MODE = 0xAC253D7842768F48,
+    GET_FOLLOW_VEHICLE_CAM_VIEW_MODE = 0xA4FF579AC0E3AAAE,
+    SET_FOLLOW_VEHICLE_CAM_ZOOM_LEVEL = 0x19464CB6E4078C8A,
+    GET_GAMEPLAY_CAM_FOV            = 0x65019750A0324133,
+    IS_CONTROL_JUST_RELEASED        = 0x0C076D25CC7AAE5B,
+    GET_VEHICLE_RPM                 = 0xE7B12B54,
 }
 
 -- ============================================================
@@ -521,11 +536,18 @@ local originalHandling  = nil
 local lastVehicle       = nil
 
 -- Feature toggles
-local counterSteerEnabled = true
-local hudEnabled          = true
-local tireSmokeEnabled    = true
-local angleTrackEnabled   = true
-local throttleModEnabled  = true
+local counterSteerEnabled   = true
+local hudEnabled            = true
+local tireSmokeEnabled      = true
+local angleTrackEnabled     = true
+local throttleModEnabled    = true
+local handbrakeBoostEnabled = true
+local autoApplyEnabled      = true
+local driftCameraEnabled    = false
+local backfireEnabled       = true
+local angleSmokeColorEnabled = false   -- angle-based smoke color mode
+local useKMH                = false    -- false = MPH, true = KM/H
+local personalBestNotify    = true
 
 -- Drift angle state
 local currentAngle      = 0.0
@@ -535,15 +557,50 @@ local driftStartTime    = 0
 local driftDuration     = 0.0
 local driftScore        = 0
 local comboMultiplier   = 1.0
-local comboTimer        = -1    -- -1 = uninitialized (avoids stale comparison with game time)
+local comboTimer        = -1
 local totalScore        = 0
 local bestAngle         = 0.0
 local bestCombo         = 0
+
+-- Session stats
+local sessionStats = {
+    longestDrift    = 0.0,      -- seconds
+    fastestSpeed    = 0.0,      -- m/s during drift
+    totalDrifts     = 0,        -- number of drift entries
+    totalAngle      = 0.0,      -- sum of angles (for average)
+    angleSamples    = 0,        -- sample count (for average)
+    bestAngle       = 0.0,
+    bestCombo       = 0,
+    bestScore       = 0,
+}
+
+-- Auto-apply per car: model hash -> preset index
+local carPresetMap = {}
 
 -- Smoke FX state
 local smokeHandles      = {}
 local ptfxLoaded        = false
 local smokeColor        = { r = 255, g = 255, b = 255 }
+
+-- Handbrake boost state
+local handbrakeBoostActive = false
+local handbrakeBoostTimer  = 0
+
+-- Drift camera state
+local defaultFOV        = 50.0
+local driftFOV          = 60.0
+local currentFOVTarget  = 50.0
+
+-- Backfire state
+local backfirePtfxLoaded = false
+local lastThrottle       = 0.0
+local backfireCooldown   = 0
+
+-- AWD drift bias (0.0 = RWD, 0.1 = 10/90, etc.)
+local awdDriveBias      = 0.0
+
+-- Keyboard hotkey
+local CYCLE_PRESET_KEY  = 0x43  -- C key (default)
 
 -- ============================================================
 -- CORE HELPERS
@@ -640,6 +697,12 @@ end
 -- DRIFT ANGLE TRACKER & SCORING
 -- ============================================================
 
+-- Forward declarations (defined later in the file)
+local updateSessionStats
+local onDriftStart
+local onDriftEnd
+local getAngleSmokeColor
+
 local DRIFT_ANGLE_THRESHOLD = 5.0     -- min angle to count as drifting
 local COMBO_TIMEOUT         = 1500    -- ms before combo resets
 local SCORE_MULTIPLIER      = 1.0     -- base score per tick
@@ -676,12 +739,16 @@ local function updateDriftTracking(vehicle)
         if not isDrifting then
             isDrifting = true
             driftStartTime = now
+            onDriftStart()
             -- Continue combo if within timeout
             if comboTimer < 0 or (now - comboTimer) > COMBO_TIMEOUT then
                 comboMultiplier = 1.0
                 driftScore = 0
             end
         end
+
+        -- Feed session stats
+        updateSessionStats(vehicle)
 
         -- Track peak angle this drift
         if absAngle > peakAngle then
@@ -710,6 +777,8 @@ local function updateDriftTracking(vehicle)
                 bestCombo = math.floor(driftScore)
             end
 
+            -- Session stats + personal best notifications
+            onDriftEnd(driftDuration, driftScore, peakAngle)
             peakAngle = 0.0
         end
 
@@ -801,6 +870,13 @@ local function updateSmokeScale(absAngle, speed)
     local scale = 0.3 + (angleFactor * speedFactor * 1.2)
     for _, handle in ipairs(smokeHandles) do
         invoker.call(N.SET_PARTICLE_FX_LOOPED_SCALE, handle, scale)
+
+        -- Update color: angle-based or static
+        if angleSmokeColorEnabled then
+            local r, g, b = getAngleSmokeColor(absAngle)
+            invoker.call(N.SET_PARTICLE_FX_LOOPED_COLOUR, handle,
+                r / 255.0, g / 255.0, b / 255.0, false)
+        end
     end
 end
 
@@ -895,6 +971,282 @@ local function doThrottleModulation(vehicle)
 end
 
 -- ============================================================
+-- AUTO-APPLY PER CAR
+-- ============================================================
+
+local function getVehicleModelHash(vehicle)
+    return invoker.call(N.GET_ENTITY_MODEL, vehicle).int
+end
+
+local function rememberCarPreset(vehicle, presetIdx)
+    local hash = getVehicleModelHash(vehicle)
+    if hash and hash ~= 0 then
+        carPresetMap[hash] = presetIdx
+    end
+end
+
+local function getRememberedPreset(vehicle)
+    local hash = getVehicleModelHash(vehicle)
+    if hash and carPresetMap[hash] then
+        return carPresetMap[hash]
+    end
+    return nil
+end
+
+-- ============================================================
+-- SESSION STATS
+-- ============================================================
+
+updateSessionStats = function(vehicle)
+    if not isDrifting then return end
+
+    local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
+    local absAngle = math.abs(currentAngle)
+
+    -- Fastest speed during drift
+    if speed > sessionStats.fastestSpeed then
+        sessionStats.fastestSpeed = speed
+    end
+
+    -- Angle sampling for average
+    sessionStats.totalAngle = sessionStats.totalAngle + absAngle
+    sessionStats.angleSamples = sessionStats.angleSamples + 1
+end
+
+onDriftStart = function()
+    sessionStats.totalDrifts = sessionStats.totalDrifts + 1
+end
+
+onDriftEnd = function(duration, score, peak)
+    -- Longest drift
+    if duration > sessionStats.longestDrift then
+        sessionStats.longestDrift = duration
+    end
+
+    -- Best score
+    if score > sessionStats.bestScore then
+        sessionStats.bestScore = score
+    end
+
+    -- Best angle
+    local newBestAngle = false
+    if peak > sessionStats.bestAngle then
+        sessionStats.bestAngle = peak
+        newBestAngle = true
+    end
+
+    -- Best combo
+    local newBestCombo = false
+    if math.floor(score) > sessionStats.bestCombo then
+        sessionStats.bestCombo = math.floor(score)
+        newBestCombo = true
+    end
+
+    -- Personal best notifications
+    if personalBestNotify then
+        if newBestAngle then
+            notify.push('MikzDrift', string.format('New best angle! %.1f\xC2\xB0', peak), { time = 3000 })
+        end
+        if newBestCombo and math.floor(score) > 500 then
+            notify.push('MikzDrift', string.format('New best combo! %d pts', math.floor(score)), { time = 3000 })
+        end
+    end
+end
+
+local function resetSessionStats()
+    sessionStats.longestDrift = 0.0
+    sessionStats.fastestSpeed = 0.0
+    sessionStats.totalDrifts = 0
+    sessionStats.totalAngle = 0.0
+    sessionStats.angleSamples = 0
+    sessionStats.bestAngle = 0.0
+    sessionStats.bestCombo = 0
+    sessionStats.bestScore = 0
+end
+
+local function getAverageAngle()
+    if sessionStats.angleSamples > 0 then
+        return sessionStats.totalAngle / sessionStats.angleSamples
+    end
+    return 0.0
+end
+
+-- ============================================================
+-- HANDBRAKE BOOST
+-- ============================================================
+
+local function doHandbrakeBoost(vehicle)
+    if not handbrakeBoostEnabled or not driftActive then return end
+
+    local now = getGameTime()
+    local handbrakePressed = invoker.call(N.IS_CONTROL_PRESSED, 0, 76).bool -- INPUT_VEH_HANDBRAKE
+
+    if handbrakePressed and not handbrakeBoostActive then
+        -- Initiate boost: lateral kick to start the slide
+        handbrakeBoostActive = true
+        handbrakeBoostTimer = now
+
+        local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
+        if speed > 5.0 then
+            local steer = invoker.call(N.GET_CONTROL_NORMAL, 0, 59).float
+            local kickForce = clamp(steer * 1.8 * (speed / 20.0), -3.0, 3.0)
+
+            invoker.call(N.APPLY_FORCE_TO_ENTITY,
+                vehicle, 1,
+                kickForce, -0.3, 0.0,
+                0.0, -2.0, 0.0,
+                0, true, true, true, false, true
+            )
+        end
+    elseif handbrakePressed and handbrakeBoostActive then
+        -- Fade out after 400ms
+        if now - handbrakeBoostTimer > 400 then
+            handbrakeBoostActive = false
+        end
+    else
+        handbrakeBoostActive = false
+    end
+end
+
+-- ============================================================
+-- DRIFT CAMERA
+-- ============================================================
+
+local function updateDriftCamera(vehicle)
+    if not driftCameraEnabled or not driftActive then
+        -- Smoothly return to default FOV
+        currentFOVTarget = defaultFOV
+        return
+    end
+
+    local absAngle = math.abs(currentAngle)
+    local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
+
+    if absAngle > 10.0 and speed > 5.0 then
+        -- Widen FOV based on drift intensity
+        local fovAdd = clamp(absAngle / 8.0, 0.0, 12.0)
+        currentFOVTarget = defaultFOV + fovAdd
+    else
+        currentFOVTarget = defaultFOV
+    end
+end
+
+-- ============================================================
+-- BACKFIRE / ANTI-LAG POPS
+-- ============================================================
+
+local BACKFIRE_PTFX_DICT = 'core'
+local BACKFIRE_PTFX_NAME = 'veh_backfire'
+
+local function loadBackfirePtfx()
+    if backfirePtfxLoaded then
+        if invoker.call(N.HAS_NAMED_PTFX_ASSET_LOADED, BACKFIRE_PTFX_DICT).bool then
+            return true
+        end
+        backfirePtfxLoaded = false
+    end
+    invoker.call(N.REQUEST_NAMED_PTFX_ASSET, BACKFIRE_PTFX_DICT)
+    if invoker.call(N.HAS_NAMED_PTFX_ASSET_LOADED, BACKFIRE_PTFX_DICT).bool then
+        backfirePtfxLoaded = true
+        return true
+    end
+    return false
+end
+
+local function doBackfire(vehicle)
+    if not backfireEnabled or not driftActive then return end
+
+    local now = getGameTime()
+    if now < backfireCooldown then return end
+
+    local throttle = invoker.call(N.GET_CONTROL_NORMAL, 0, 71).float
+    local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
+
+    -- Trigger on throttle lift while at speed and angle
+    local absAngle = math.abs(currentAngle)
+    if lastThrottle > 0.7 and throttle < 0.3 and speed > 8.0 and absAngle > 15.0 then
+        if loadBackfirePtfx() then
+            local exhaustBone = invoker.call(N.GET_ENTITY_BONE_INDEX_BY_NAME, vehicle, 'exhaust').int
+            if exhaustBone ~= -1 then
+                invoker.call(N.USE_PARTICLE_FX_ASSET, BACKFIRE_PTFX_DICT)
+                invoker.call(N.START_PARTICLE_FX_NON_LOOPED_ON_ENTITY,
+                    BACKFIRE_PTFX_NAME, vehicle,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    1.0,
+                    false, false, false,
+                    exhaustBone
+                )
+
+                -- Also try exhaust_2 for dual exhaust cars
+                local exhaust2 = invoker.call(N.GET_ENTITY_BONE_INDEX_BY_NAME, vehicle, 'exhaust_2').int
+                if exhaust2 ~= -1 then
+                    invoker.call(N.USE_PARTICLE_FX_ASSET, BACKFIRE_PTFX_DICT)
+                    invoker.call(N.START_PARTICLE_FX_NON_LOOPED_ON_ENTITY,
+                        BACKFIRE_PTFX_NAME, vehicle,
+                        0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        1.0,
+                        false, false, false,
+                        exhaust2
+                    )
+                end
+            end
+            backfireCooldown = now + 150 + math.random(0, 200)
+        end
+    end
+
+    lastThrottle = throttle
+end
+
+-- ============================================================
+-- ANGLE-BASED SMOKE COLOR
+-- ============================================================
+
+getAngleSmokeColor = function(absAngle)
+    if absAngle < 20.0 then
+        -- White
+        return 255, 255, 255
+    elseif absAngle < 40.0 then
+        -- White -> Yellow
+        local t = (absAngle - 20.0) / 20.0
+        return 255, math.floor(255 - t * 35), math.floor(255 - t * 205)
+    elseif absAngle < 60.0 then
+        -- Yellow -> Orange
+        local t = (absAngle - 40.0) / 20.0
+        return 255, math.floor(220 - t * 80), math.floor(50 - t * 20)
+    else
+        -- Orange -> Red
+        local t = clamp((absAngle - 60.0) / 30.0, 0.0, 1.0)
+        return 255, math.floor(140 - t * 100), math.floor(30 - t * 30)
+    end
+end
+
+-- ============================================================
+-- KEYBOARD HOTKEY
+-- ============================================================
+
+local function handleKeyboardHotkey()
+    -- C key to cycle presets (only when drift is active)
+    if not driftActive then return end
+
+    local pressed = invoker.call(N.IS_CONTROL_JUST_PRESSED, 0, CYCLE_PRESET_KEY).bool
+    if pressed then
+        currentPreset = currentPreset + 1
+        if currentPreset > #PRESETS then currentPreset = 1 end
+
+        local vehicle = getPlayerVehicle()
+        if vehicle then
+            applyDriftPreset(vehicle, PRESETS[currentPreset])
+            if autoApplyEnabled then
+                rememberCarPreset(vehicle, currentPreset)
+            end
+        end
+        notify.push('MikzDrift', 'Preset: ' .. PRESETS[currentPreset].name)
+    end
+end
+
+-- ============================================================
 -- HUD RENDERING
 -- ============================================================
 
@@ -920,7 +1272,8 @@ local function drawHUD()
 
     local res = game.resolution()
     local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
-    local speedMPH = speed * 2.237
+    local displaySpeed = useKMH and (speed * 3.6) or (speed * 2.237)
+    local speedUnit = useKMH and 'KM/H' or 'MPH'
     local absAngle = math.abs(currentAngle)
     local preset = PRESETS[currentPreset]
 
@@ -960,7 +1313,7 @@ local function drawHUD()
         :draw()
 
     -- Speed
-    gui.text(string.format('%.0f MPH', speedMPH))
+    gui.text(string.format('%.0f %s', displaySpeed, speedUnit))
         :position(vec2(barX + 120.0, barY + 6.0))
         :color(color(80, 255, 80, 230))
         :scale(0.95)
@@ -996,7 +1349,7 @@ local function drawHUD()
 
     -- Stats bar (below main)
     local statsY = barY + barH + 4.0
-    local statsH = 22.0
+    local statsH = 36.0
 
     gui.rect(vec2(barX, statsY), vec2(barW, statsH))
         :filled()
@@ -1004,22 +1357,49 @@ local function drawHUD()
         :rounding(4.0)
         :draw()
 
+    -- Row 1: score totals
     gui.text(string.format('Total: %d', totalScore))
-        :position(vec2(barX + 10.0, statsY + 3.0))
+        :position(vec2(barX + 10.0, statsY + 2.0))
         :color(color(160, 160, 160, 200))
-        :scale(0.6)
+        :scale(0.55)
         :draw()
 
-    gui.text(string.format('Best: %.1f\xC2\xB0', bestAngle))
-        :position(vec2(barX + 140.0, statsY + 3.0))
+    gui.text(string.format('Best: %.1f\xC2\xB0', sessionStats.bestAngle))
+        :position(vec2(barX + 120.0, statsY + 2.0))
         :color(color(160, 160, 160, 200))
-        :scale(0.6)
+        :scale(0.55)
         :draw()
 
-    gui.text(string.format('Best Combo: %d', bestCombo))
-        :position(vec2(barX + 270.0, statsY + 3.0))
+    gui.text(string.format('Best Combo: %d', sessionStats.bestCombo))
+        :position(vec2(barX + 240.0, statsY + 2.0))
         :color(color(160, 160, 160, 200))
-        :scale(0.6)
+        :scale(0.55)
+        :draw()
+
+    -- Row 2: session stats
+    local fastDisplay = useKMH and (sessionStats.fastestSpeed * 3.6) or (sessionStats.fastestSpeed * 2.237)
+    gui.text(string.format('Drifts: %d', sessionStats.totalDrifts))
+        :position(vec2(barX + 10.0, statsY + 18.0))
+        :color(color(130, 130, 130, 180))
+        :scale(0.5)
+        :draw()
+
+    gui.text(string.format('Longest: %.1fs', sessionStats.longestDrift))
+        :position(vec2(barX + 100.0, statsY + 18.0))
+        :color(color(130, 130, 130, 180))
+        :scale(0.5)
+        :draw()
+
+    gui.text(string.format('Fastest: %.0f %s', fastDisplay, speedUnit))
+        :position(vec2(barX + 210.0, statsY + 18.0))
+        :color(color(130, 130, 130, 180))
+        :scale(0.5)
+        :draw()
+
+    gui.text(string.format('Avg: %.1f\xC2\xB0', getAverageAngle()))
+        :position(vec2(barX + 330.0, statsY + 18.0))
+        :color(color(130, 130, 130, 180))
+        :scale(0.5)
         :draw()
 end
 
@@ -1171,6 +1551,8 @@ local SLIDER_DEFS = {
     }},
     { 'Assist',             {
         { 'Counter-Steer Strength', 'assistStrength',       0.00, 1.00, 0.05, 'Controller counter-steer assist strength' },
+        { 'Assist Angle Min',       'assistAngleMin',       5.0,  30.0, 1.0,  'Min drift angle before assist kicks in' },
+        { 'Assist Angle Max',       'assistAngleMax',       50.0, 150.0, 5.0, 'Max drift angle where assist still works' },
     }},
 }
 
@@ -1184,13 +1566,14 @@ for _, category in ipairs(SLIDER_DEFS) do
         local label, key, sMin, sMax, step, tip = slider[1], slider[2], slider[3], slider[4], slider[5], slider[6]
 
         -- Determine which table to read/write
-        local isAssist = (key == 'assistStrength')
+        -- Keys that live on editPreset root (not in .mult)
+        local isRootKey = (key == 'assistStrength' or key == 'assistAngleMin' or key == 'assistAngleMax')
 
         -- Calculate integer range for slider (Lexis uses integer sliders)
         local steps = math.floor((sMax - sMin) / step + 0.5)
         local defaultIdx = 0
-        if isAssist then
-            defaultIdx = math.floor((editPreset.assistStrength - sMin) / step + 0.5)
+        if isRootKey then
+            defaultIdx = math.floor(((editPreset[key] or sMin) - sMin) / step + 0.5)
         else
             defaultIdx = math.floor(((editPreset.mult[key] or 1.0) - sMin) / step + 0.5)
         end
@@ -1201,8 +1584,8 @@ for _, category in ipairs(SLIDER_DEFS) do
             :event(menu.event.click, function(opt)
                 local val = sMin + opt.value * step
                 val = math.floor(val * 10000 + 0.5) / 10000 -- round to 4 decimals
-                if isAssist then
-                    editPreset.assistStrength = val
+                if isRootKey then
+                    editPreset[key] = val
                 else
                     editPreset.mult[key] = val
                 end
@@ -1379,8 +1762,17 @@ local driftToggle = driftMenu:toggle('Enable Drift')
             originalHandling = saveHandling(vehicle)
             lastVehicle = vehicle
             applyDriftPreset(vehicle, PRESETS[currentPreset])
+            -- Apply AWD bias if set
+            if awdDriveBias > 0 then
+                invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                    joaat('CHandlingData'), joaat('fDriveBiasFront'), awdDriveBias)
+            end
             driftActive = true
             resetDriftState()
+            -- Remember for auto-apply
+            if autoApplyEnabled then
+                rememberCarPreset(vehicle, currentPreset)
+            end
             notify.push('MikzDrift', 'Drift ON - ' .. PRESETS[currentPreset].name)
         else
             disableDrift()
@@ -1407,6 +1799,50 @@ assistMenu:toggle('Throttle Modulation')
         notify.push('MikzDrift', 'Throttle mod: ' .. (opt.value and 'ON' or 'OFF'))
     end)
 
+assistMenu:toggle('Handbrake Boost')
+    :tooltip('Extra kick when pulling handbrake to help initiate drifts')
+    :value(handbrakeBoostEnabled)
+    :event(menu.event.click, function(opt)
+        handbrakeBoostEnabled = opt.value
+        notify.push('MikzDrift', 'Handbrake boost: ' .. (opt.value and 'ON' or 'OFF'))
+    end)
+
+-- AWD drift option
+assistMenu:slider_int('Drive Bias (AWD)', 0, 10, 0)
+    :tooltip('0 = Pure RWD, 1-10 = front drive % (e.g. 2 = 20/80 AWD split)')
+    :event(menu.event.click, function(opt)
+        awdDriveBias = opt.value / 10.0
+        -- Update the driveBiasFront override in all presets' set tables
+        -- and re-apply if drift is active
+        if driftActive then
+            local vehicle = getPlayerVehicle()
+            if vehicle then
+                invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                    joaat('CHandlingData'), joaat('fDriveBiasFront'), awdDriveBias)
+            end
+        end
+        if awdDriveBias == 0.0 then
+            notify.push('MikzDrift', 'Drive: Pure RWD')
+        else
+            notify.push('MikzDrift', string.format('Drive: %d/%d AWD', math.floor(awdDriveBias * 100), 100 - math.floor(awdDriveBias * 100)))
+        end
+    end)
+
+assistMenu:toggle('Auto-Apply Per Car')
+    :tooltip('Remember which preset you used on each car model and auto-apply')
+    :value(autoApplyEnabled)
+    :event(menu.event.click, function(opt)
+        autoApplyEnabled = opt.value
+        notify.push('MikzDrift', 'Auto-apply: ' .. (opt.value and 'ON' or 'OFF'))
+    end)
+
+assistMenu:button('Clear Remembered Cars')
+    :tooltip('Forget all per-car preset assignments')
+    :event(menu.event.click, function()
+        carPresetMap = {}
+        notify.push('MikzDrift', 'Cleared all remembered car presets')
+    end)
+
 -- ---- Visuals submenu ----
 local visualMenu = driftMenu:submenu('Visuals')
 
@@ -1419,7 +1855,16 @@ visualMenu:toggle('Tire Smoke')
         notify.push('MikzDrift', 'Tire smoke: ' .. (opt.value and 'ON' or 'OFF'))
     end)
 
--- Smoke color options
+visualMenu:toggle('Angle-Based Smoke Color')
+    :tooltip('Smoke changes color with drift angle (white -> yellow -> orange -> red)')
+    :value(angleSmokeColorEnabled)
+    :event(menu.event.click, function(opt)
+        angleSmokeColorEnabled = opt.value
+        if not opt.value then stopSmoke() end -- reset to static color
+        notify.push('MikzDrift', 'Angle smoke color: ' .. (opt.value and 'ON' or 'OFF'))
+    end)
+
+-- Smoke color options (for static mode)
 local smokeColors = {
     { 'White',  { r = 255, g = 255, b = 255 } },
     { 'Blue',   { r = 80,  g = 160, b = 255 } },
@@ -1436,20 +1881,36 @@ for i, sc in ipairs(smokeColors) do
     smokeColorList[i] = { sc[1], i }
 end
 
-visualMenu:combo_int('Smoke Color', smokeColorList, menu.type.scroll)
-    :tooltip('Change tire smoke color')
+visualMenu:combo_int('Smoke Color (Static)', smokeColorList, menu.type.scroll)
+    :tooltip('Static smoke color (used when angle-based color is off)')
     :event(menu.event.click, function(opt)
         local idx = opt.list:at(opt.value).value
         smokeColor = smokeColors[idx][2]
-        stopSmoke() -- restart with new color on next tick
+        stopSmoke()
         notify.push('MikzDrift', 'Smoke: ' .. smokeColors[idx][1])
+    end)
+
+visualMenu:toggle('Backfire / Anti-Lag')
+    :tooltip('Exhaust pops on throttle lift during drifts')
+    :value(backfireEnabled)
+    :event(menu.event.click, function(opt)
+        backfireEnabled = opt.value
+        notify.push('MikzDrift', 'Backfire: ' .. (opt.value and 'ON' or 'OFF'))
+    end)
+
+visualMenu:toggle('Drift Camera')
+    :tooltip('Wider FOV during drifts for a cinematic feel')
+    :value(driftCameraEnabled)
+    :event(menu.event.click, function(opt)
+        driftCameraEnabled = opt.value
+        notify.push('MikzDrift', 'Drift camera: ' .. (opt.value and 'ON' or 'OFF'))
     end)
 
 -- ---- HUD submenu ----
 local hudMenu = driftMenu:submenu('HUD & Scoring')
 
 hudMenu:toggle('Show HUD')
-    :tooltip('Display drift HUD with angle, speed, score')
+    :tooltip('Display drift HUD with angle, speed, score, and session stats')
     :value(hudEnabled)
     :event(menu.event.click, function(opt)
         hudEnabled = opt.value
@@ -1462,6 +1923,21 @@ hudMenu:toggle('Angle Tracker')
         angleTrackEnabled = opt.value
     end)
 
+hudMenu:toggle('Personal Best Notifications')
+    :tooltip('Show popup when you beat your best angle or combo')
+    :value(personalBestNotify)
+    :event(menu.event.click, function(opt)
+        personalBestNotify = opt.value
+    end)
+
+hudMenu:combo_int('Speed Unit', { { 'MPH', 1 }, { 'KM/H', 2 } }, menu.type.scroll)
+    :tooltip('Switch between MPH and KM/H')
+    :event(menu.event.click, function(opt)
+        local idx = opt.list:at(opt.value).value
+        useKMH = (idx == 2)
+        notify.push('MikzDrift', 'Speed: ' .. (useKMH and 'KM/H' or 'MPH'))
+    end)
+
 hudMenu:button('Reset Score')
     :tooltip('Reset total score and best records')
     :event(menu.event.click, function()
@@ -1471,6 +1947,18 @@ hudMenu:button('Reset Score')
         driftScore = 0
         comboMultiplier = 1.0
         notify.push('MikzDrift', 'Score reset!')
+    end)
+
+hudMenu:button('Reset Session Stats')
+    :tooltip('Reset all session statistics')
+    :event(menu.event.click, function()
+        resetSessionStats()
+        totalScore = 0
+        bestAngle = 0.0
+        bestCombo = 0
+        driftScore = 0
+        comboMultiplier = 1.0
+        notify.push('MikzDrift', 'Session stats reset!')
     end)
 
 -- ---- Restore button ----
@@ -1490,7 +1978,7 @@ driftMenu:button('Restore Original Handling')
 -- MAIN THREAD
 -- ============================================================
 
-notify.push('MikzDrift', 'v2.1 Loaded | Works on any car | Use the menu to enable', { time = 5000 })
+notify.push('MikzDrift', 'v3.0 Loaded | Works on any car | Use the menu to enable', { time = 5000 })
 
 -- Cleanup on script unload: stop smoke, restore handling
 this:event(this.event.unload, function()
@@ -1500,16 +1988,42 @@ this:event(this.event.unload, function()
     end
 end)
 
+-- Track last vehicle we were in (for auto-apply detection)
+local lastCheckedVehicle = nil
+
 util.create_thread(function()
     while true do
         local vehicle = getPlayerVehicle()
 
+        -- Auto-apply: when entering a new vehicle, check if we have a remembered preset
+        if vehicle and not driftActive and autoApplyEnabled then
+            if vehicle ~= lastCheckedVehicle then
+                lastCheckedVehicle = vehicle
+                local remembered = getRememberedPreset(vehicle)
+                if remembered and remembered <= #PRESETS then
+                    currentPreset = remembered
+                    originalHandling = saveHandling(vehicle)
+                    lastVehicle = vehicle
+                    applyDriftPreset(vehicle, PRESETS[currentPreset])
+                    -- Apply AWD bias if set
+                    if awdDriveBias > 0 then
+                        invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                            joaat('CHandlingData'), joaat('fDriveBiasFront'), awdDriveBias)
+                    end
+                    driftActive = true
+                    driftToggle.value = true
+                    resetDriftState()
+                    notify.push('MikzDrift', 'Auto-applied: ' .. PRESETS[currentPreset].name)
+                end
+            end
+        end
+
         if vehicle and driftActive then
             -- Detect vehicle swap: player got into a different car
             if lastVehicle and vehicle ~= lastVehicle then
-                -- Restore old car's handling, disable drift
                 disableDrift()
                 driftToggle.value = false
+                lastCheckedVehicle = vehicle -- prevent auto-apply loop on same frame
                 notify.push('MikzDrift', 'Switched vehicle - drift disabled')
             else
                 -- Live preview: re-apply edit preset each tick while tuning
@@ -1520,14 +2034,22 @@ util.create_thread(function()
                 updateDriftTracking(vehicle)
                 doCounterSteerAssist(vehicle)
                 doThrottleModulation(vehicle)
+                doHandbrakeBoost(vehicle)
+                doBackfire(vehicle)
                 updateTireSmoke(vehicle)
+                updateDriftCamera(vehicle)
             end
         elseif not vehicle and driftActive then
-            -- Player left the vehicle entirely
             disableDrift()
             driftToggle.value = false
+            lastCheckedVehicle = nil
             notify.push('MikzDrift', 'Left vehicle - drift disabled')
+        elseif not vehicle then
+            lastCheckedVehicle = nil
         end
+
+        -- Keyboard hotkey (works anytime)
+        handleKeyboardHotkey()
 
         drawHUD()
         util.yield()

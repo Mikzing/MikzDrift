@@ -388,7 +388,8 @@ local PRESETS = {
 -- ============================================================
 
 local PATH_SEP = package.config:sub(1, 1) -- '\\' on Windows, '/' on Unix
-local SAVE_DIR = this.dir() .. PATH_SEP .. 'MikzDrift' .. PATH_SEP .. 'presets'
+local SCRIPT_DIR = this.dir():gsub('[/\\]$', '') -- strip trailing separator
+local SAVE_DIR = SCRIPT_DIR .. PATH_SEP .. 'MikzDrift' .. PATH_SEP .. 'presets'
 
 -- Ensure save directory exists
 local function ensureSaveDir()
@@ -459,7 +460,7 @@ local function loadPresetFromFile(path)
     end
     local ok, result = pcall(fn)
     if not ok or type(result) ~= 'table' then
-        return nil, 'Invalid preset file'
+        return nil, 'Invalid preset file: ' .. tostring(result)
     end
     -- Validate required fields
     if not result.name or not result.mult then
@@ -665,22 +666,15 @@ end
 -- preset.mult[key] = multiplier applied to stock value (1.0 = no change)
 -- preset.set[key]  = forced absolute value (overrides stock entirely)
 local function applyDriftPreset(vehicle, preset)
-    if not originalHandling then return end
-
     for _, e in ipairs(HANDLING_FIELDS) do
-        local stockVal = originalHandling[e.key]
-        if stockVal then
-            local newVal = stockVal
-
-            -- Check for forced absolute value first
-            if preset.set and preset.set[e.key] ~= nil then
-                newVal = preset.set[e.key]
-            -- Then apply multiplier
-            elseif preset.mult and preset.mult[e.key] then
-                newVal = stockVal * preset.mult[e.key]
+        -- Forced absolute values work even without stock data
+        if preset.set and preset.set[e.key] ~= nil then
+            invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle, joaat('CHandlingData'), joaat(e.field), preset.set[e.key])
+        elseif originalHandling then
+            local stockVal = originalHandling[e.key]
+            if stockVal and preset.mult and preset.mult[e.key] then
+                invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle, joaat('CHandlingData'), joaat(e.field), stockVal * preset.mult[e.key])
             end
-
-            invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle, joaat('CHandlingData'), joaat(e.field), newVal)
         end
     end
 end
@@ -736,11 +730,13 @@ end
 -- DRIFT ANGLE TRACKER & SCORING
 -- ============================================================
 
--- Forward declarations (defined later in the file)
-local updateSessionStats
-local onDriftStart
-local onDriftEnd
-local getAngleSmokeColor
+-- Forward declarations — initialized to no-ops until real definitions override
+local updateSessionStats = function() end
+local onDriftStart = function() end
+local onDriftEnd = function() end
+local getAngleSmokeColor = function() return 255, 255, 255 end
+local updateTandemScoring = function() return 0.0 end
+local findNearestDriftingPlayer
 
 local DRIFT_ANGLE_THRESHOLD = 5.0     -- min angle to count as drifting
 local COMBO_TIMEOUT         = 1500    -- ms before combo resets
@@ -753,7 +749,7 @@ local function calcDriftAngle(vehicle)
     if speed < 3.0 then return 0.0 end
 
     local heading = invoker.call(N.GET_ENTITY_HEADING, vehicle).float
-    local moveAngle = math.deg(math.atan(vel.x, vel.y))
+    local moveAngle = math.deg(math.atan(vel.y, vel.x))
     local angle = normalizeAngle(heading - moveAngle)
 
     return angle
@@ -1025,6 +1021,10 @@ local function getRememberedPreset(vehicle)
     if not hash or not carPresetMap[hash] then return nil end
 
     local name = carPresetMap[hash]
+    if type(name) ~= 'string' then
+        carPresetMap[hash] = nil
+        return nil
+    end
     -- Find the preset by name (index may have shifted)
     for i, p in ipairs(PRESETS) do
         if p.name == name then
@@ -1090,7 +1090,7 @@ onDriftEnd = function(duration, score, peak)
     -- Personal best notifications (skip trivial first-drift bests)
     if personalBestNotify and sessionStats.totalDrifts > 1 then
         if newBestAngle and peak > 15.0 then
-            notify.push('MikzDrift', string.format('New best angle! %.1f\xC2\xB0', peak), { time = 3000 })
+            notify.push('MikzDrift', string.format('New best angle! %.1f°', peak), { time = 3000 })
         end
         if newBestCombo and math.floor(score) > 500 then
             notify.push('MikzDrift', string.format('New best combo! %d pts', math.floor(score)), { time = 3000 })
@@ -1337,6 +1337,9 @@ local function ghostDeleteVehicle()
         end
         ghostVehicle = nil
     end
+    if ghostModelHash then
+        invoker.call(N.SET_MODEL_AS_NO_LONGER_NEEDED, ghostModelHash)
+    end
 end
 
 local function ghostSpawnVehicle()
@@ -1347,6 +1350,7 @@ local function ghostSpawnVehicle()
     -- Request model
     invoker.call(N.REQUEST_MODEL, ghostModelHash)
     if not invoker.call(N.HAS_MODEL_LOADED, ghostModelHash).bool then
+        invoker.call(N.SET_MODEL_AS_NO_LONGER_NEEDED, ghostModelHash)
         return false
     end
 
@@ -1364,9 +1368,11 @@ local function ghostSpawnVehicle()
         invoker.call(N.SET_ENTITY_COLLISION, ghostVehicle, false, false)
         invoker.call(N.SET_ENTITY_INVINCIBLE, ghostVehicle, true)
         invoker.call(N.FREEZE_ENTITY_POSITION, ghostVehicle, true)
-        invoker.call(N.SET_MODEL_AS_NO_LONGER_NEEDED, ghostModelHash)
+        -- Don't release model yet — vehicle still references it
+        -- It will be released when ghostDeleteVehicle is called
         return true
     end
+    invoker.call(N.SET_MODEL_AS_NO_LONGER_NEEDED, ghostModelHash)
     return false
 end
 
@@ -1392,6 +1398,12 @@ end
 
 local function ghostUpdatePlayback()
     if not ghostPlaying or not ghostVehicle then return end
+    -- Validate ghost vehicle still exists (could be deleted by game or other scripts)
+    if not invoker.call(N.DOES_ENTITY_EXIST, ghostVehicle).bool then
+        ghostVehicle = nil
+        ghostPlaying = false
+        return
+    end
 
     ghostPlayIndex = ghostPlayIndex + 1
     if ghostPlayIndex > #ghostFrames then
@@ -1453,7 +1465,7 @@ end
 -- TANDEM PROXIMITY SCORING
 -- ============================================================
 
-local function findNearestDriftingPlayer(myVehicle)
+findNearestDriftingPlayer = function(myVehicle)
     local myPos = invoker.call(N.GET_ENTITY_COORDS, myVehicle, true).scr_vec3
     local nearest = nil
     local nearestDist = TANDEM_MAX_DIST + 1
@@ -1466,6 +1478,7 @@ local function findNearestDriftingPlayer(myVehicle)
 
             if playerPed ~= myPed and invoker.call(N.IS_PED_IN_ANY_VEHICLE, playerPed, false).bool then
                 local theirVehicle = invoker.call(N.GET_VEHICLE_PED_IS_IN, playerPed, false).int
+                if theirVehicle and theirVehicle ~= 0 and invoker.call(N.DOES_ENTITY_EXIST, theirVehicle).bool then
                 local theirPos = invoker.call(N.GET_ENTITY_COORDS, theirVehicle, true).scr_vec3
                 local theirSpeed = invoker.call(N.GET_ENTITY_SPEED, theirVehicle).float
 
@@ -1480,6 +1493,7 @@ local function findNearestDriftingPlayer(myVehicle)
                     nearestDist = dist
                     nearest = theirVehicle
                 end
+                end -- theirVehicle exists check
             end
         end
     end
@@ -1487,7 +1501,7 @@ local function findNearestDriftingPlayer(myVehicle)
     return nearest, nearestDist
 end
 
-local function updateTandemScoring(vehicle)
+updateTandemScoring = function(vehicle)
     if not tandemEnabled or not driftActive or not isDrifting then
         tandemBonusActive = false
         tandemPartner = nil
@@ -1603,6 +1617,8 @@ local function drawHUD()
     if not vehicle then return end
 
     local res = game.resolution()
+    if not res or not res.x or not res.y then return end
+
     local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
     local displaySpeed = useKMH and (speed * 3.6) or (speed * 2.237)
     local speedUnit = useKMH and 'KM/H' or 'MPH'
@@ -1654,7 +1670,7 @@ local function drawHUD()
     -- Drift angle (big display)
     if angleTrackEnabled then
         local angleStr = string.format('%.1f', absAngle)
-        gui.text(angleStr .. '\xC2\xB0')
+        gui.text(angleStr .. '°')
             :position(vec2(barX + 230.0, barY + 2.0))
             :color(getAngleColor(absAngle))
             :scale(1.3)
@@ -1696,7 +1712,7 @@ local function drawHUD()
         :scale(0.55)
         :draw()
 
-    gui.text(string.format('Best: %.1f\xC2\xB0', sessionStats.bestAngle))
+    gui.text(string.format('Best: %.1f°', sessionStats.bestAngle))
         :position(vec2(barX + 120.0, statsY + 2.0))
         :color(color(160, 160, 160, 200))
         :scale(0.55)
@@ -1728,7 +1744,7 @@ local function drawHUD()
         :scale(0.5)
         :draw()
 
-    gui.text(string.format('Avg: %.1f\xC2\xB0', getAverageAngle()))
+    gui.text(string.format('Avg: %.1f°', getAverageAngle()))
         :position(vec2(barX + 330.0, statsY + 18.0))
         :color(color(130, 130, 130, 180))
         :scale(0.5)
@@ -2494,6 +2510,7 @@ local lastCheckedVehicle = nil
 
 util.create_thread(function()
     while true do
+        local ok, err = pcall(function()
         local vehicle = getPlayerVehicle()
 
         -- Auto-apply: when entering a new vehicle, check if we have a remembered preset
@@ -2566,6 +2583,10 @@ util.create_thread(function()
         handleKeyboardHotkey()
 
         drawHUD()
+        end) -- pcall
+        if not ok then
+            notify.push('MikzDrift', 'Error: ' .. tostring(err))
+        end
         util.yield()
     end
 end)

@@ -403,19 +403,17 @@ end
 
 local SAVE_DIR = SCRIPT_DIR .. PATH_SEP .. 'MikzDrift' .. PATH_SEP .. 'presets'
 
--- Whether file I/O is available in this environment (Lexis may sandbox it)
-local FILE_IO_AVAILABLE = true
+-- Detect file I/O availability (Lexis sandboxes os.execute, io.open, io.popen, etc.)
+local FILE_IO_AVAILABLE = (os and os.execute ~= nil and io and io.open ~= nil)
 
--- Ensure save directory exists (fails gracefully if sandboxed)
+-- Ensure save directory exists (no-op if sandboxed)
 local function ensureSaveDir()
-    local ok = pcall(function()
-        if PATH_SEP == '\\' then
-            os.execute('mkdir "' .. SAVE_DIR .. '" 2>nul')
-        else
-            os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
-        end
-    end)
-    if not ok then FILE_IO_AVAILABLE = false end
+    if not FILE_IO_AVAILABLE then return end
+    if PATH_SEP == '\\' then
+        os.execute('mkdir "' .. SAVE_DIR .. '" 2>nul')
+    else
+        os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
+    end
 end
 
 -- Serialize a preset table to a saveable string
@@ -460,8 +458,8 @@ local function savePresetToFile(preset)
     ensureSaveDir()
     local filename = preset.name:gsub('[^%w ]', ''):gsub(' ', '_')
     local path = SAVE_DIR .. PATH_SEP .. filename .. '.lua'
-    local ok, f = pcall(io.open, path, 'w')
-    if not ok or not f then
+    local f = io.open(path, 'w')
+    if not f then
         notify.push('MikzDrift', 'Failed to save: could not write file')
         return false
     end
@@ -474,11 +472,12 @@ end
 
 -- Load a single preset from a .lua file
 local function loadPresetFromFile(path)
-    local ok, fn_or_err = pcall(loadfile, path)
-    if not ok or not fn_or_err then
-        return nil, tostring(fn_or_err)
+    if not FILE_IO_AVAILABLE then return nil, 'File I/O unavailable' end
+    local fn, err = loadfile(path)
+    if not fn then
+        return nil, tostring(err)
     end
-    local ok2, result = pcall(fn_or_err)
+    local ok2, result = pcall(fn)
     if not ok2 or type(result) ~= 'table' then
         return nil, 'Invalid preset file: ' .. tostring(result)
     end
@@ -494,27 +493,23 @@ end
 
 -- List all .lua files in the presets folder
 local function listPresetFiles()
-    if not FILE_IO_AVAILABLE then return {} end
+    if not FILE_IO_AVAILABLE or not io.popen then return {} end
     ensureSaveDir()
     local files = {}
-    local ok, handle = pcall(function()
-        local cmd
-        if PATH_SEP == '\\' then
-            cmd = 'dir "' .. SAVE_DIR .. '\\*.lua" /b 2>nul'
-        else
-            cmd = 'ls -1 "' .. SAVE_DIR .. '/" 2>/dev/null | grep "\\.lua$"'
-        end
-        return io.popen(cmd)
-    end)
-    if ok and handle then
-        local readOk = pcall(function()
-            for line in handle:lines() do
-                if line:match('%.lua$') then
-                    table.insert(files, line)
-                end
+    local cmd
+    if PATH_SEP == '\\' then
+        cmd = 'dir "' .. SAVE_DIR .. '\\*.lua" /b 2>nul'
+    else
+        cmd = 'ls -1 "' .. SAVE_DIR .. '/" 2>/dev/null | grep "\\.lua$"'
+    end
+    local handle = io.popen(cmd)
+    if handle then
+        for line in handle:lines() do
+            if line:match('%.lua$') then
+                table.insert(files, line)
             end
-        end)
-        pcall(function() handle:close() end)
+        end
+        handle:close()
     end
     return files
 end
@@ -535,11 +530,10 @@ end
 
 -- Delete a preset file by name
 local function deletePresetFile(presetName)
-    if not FILE_IO_AVAILABLE then return false end
+    if not FILE_IO_AVAILABLE or not os.remove then return false end
     local filename = presetName:gsub('[^%w ]', ''):gsub(' ', '_')
     local path = SAVE_DIR .. PATH_SEP .. filename .. '.lua'
-    local ok = pcall(os.remove, path)
-    return ok
+    return os.remove(path)
 end
 
 -- Number of built-in presets (used to tell built-in from custom)
@@ -555,16 +549,6 @@ local function reloadCustomPresets()
         table.insert(PRESETS, p)
     end
     return #customs
-end
-
--- Detect if file I/O works (test on startup)
-do
-    local ok = pcall(function()
-        ensureSaveDir()
-    end)
-    if not ok then
-        FILE_IO_AVAILABLE = false
-    end
 end
 
 -- Initial load (safe — returns 0 if file I/O is unavailable)
@@ -2188,13 +2172,11 @@ manageMenu:button('Open Presets Folder')
             return
         end
         ensureSaveDir()
-        pcall(function()
-            if PATH_SEP == '\\' then
-                os.execute('explorer "' .. SAVE_DIR .. '"')
-            else
-                os.execute('xdg-open "' .. SAVE_DIR .. '" &')
-            end
-        end)
+        if PATH_SEP == '\\' then
+            os.execute('explorer "' .. SAVE_DIR .. '"')
+        else
+            os.execute('xdg-open "' .. SAVE_DIR .. '" &')
+        end
     end)
 
 -- ---- Main toggles ----

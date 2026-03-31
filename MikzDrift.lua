@@ -671,7 +671,9 @@ local function resetDriftState()
     comboTimer = -1
     driftDuration = 0.0
     handbrakeBoostActive = false
+    handbrakeBoostTimer = 0
     lastThrottle = 0.0
+    backfireCooldown = 0
 end
 
 -- Forward declaration: disableDrift is defined after stopSmoke

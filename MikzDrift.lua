@@ -64,9 +64,6 @@ local N = {
     SET_PARTICLE_FX_LOOPED_SCALE        = 0xB44250AAA456492B,
     SET_PARTICLE_FX_LOOPED_COLOUR       = 0x7F8F65877F88783B,
     START_PARTICLE_FX_NON_LOOPED_ON_ENTITY = 0x0D53A3B8DA0809D2,
-    -- Camera
-    SET_GAMEPLAY_CAM_RELATIVE_HEADING   = 0xB4EC2312F4E5B1F1,
-    SET_FOLLOW_VEHICLE_CAM_ZOOM_LEVEL   = 0x19464CB6E4078C8A,
     -- Timer
     GET_GAME_TIMER                      = 0x9CD27B0045628463,
     -- Model
@@ -128,43 +125,47 @@ local HANDLING_FIELDS = {
 -- driveBiasFront is always 0.0 (RWD) no matter what car you're in.
 -- ============================================================
 
+-- Presets use ABSOLUTE set{} values for critical drift fields (traction,
+-- steering, handbrake) since multipliers don't work well — a car with
+-- stock traction 2.5 * 0.85 = 2.125 is still way too grippy to slide.
+-- FiveM drift servers use absolute values for these fields. Multipliers
+-- are kept for fields where scaling makes sense (suspension, mass, etc).
+
 local PRESETS = {
     -- 1) STREET — beginner-friendly, stable slides, forgiving
     {
         name            = 'Street',
         desc            = 'Beginner | Stable slides, easy recovery',
         mult = {
-            tractionMin         = 0.85,     -- slight grip reduction
-            tractionMax         = 0.88,
-            tractionLateral     = 0.95,
-            tractionBiasFront   = 1.05,     -- nudge traction to front
-            tractionLossMult    = 1.30,     -- more traction loss
-            lowSpeedTractionLoss = 1.40,
-            driveForce          = 1.10,     -- slight power bump
+            driveForce          = 1.15,
             driveInertia        = 1.05,
-            topSpeed            = 1.00,     -- keep stock top speed
-            steeringLock        = 1.15,     -- wider steering angle
+            topSpeed            = 1.00,
             brakeForce          = 0.95,
             brakeBiasFront      = 1.05,
-            handBrakeForce      = 1.30,     -- stronger handbrake for initiation
-            suspForce           = 1.15,     -- stiffer suspension
+            suspForce           = 1.15,
             suspCompDamp        = 1.10,
             suspReboundDamp     = 1.15,
-            suspUpperLimit      = 0.80,     -- lower ride height
+            suspUpperLimit      = 0.80,
             suspLowerLimit      = 0.90,
             suspBiasFront       = 1.00,
-            antiRollBar         = 0.85,     -- softer anti-roll = more body roll
+            antiRollBar         = 0.80,
             antiRollBiasFront   = 1.05,
-            downforce           = 0.60,     -- reduce downforce for slides
             dragCoeff           = 0.90,
-            camberStiffness     = 0.80,
-            rollCenterFront     = 1.00,
-            rollCenterRear      = 0.95,
-            mass                = 0.95,     -- slightly lighter
+            mass                = 0.95,
             percentSubmerged    = 1.00,
         },
         set = {
-            driveBiasFront      = 0.0,      -- force RWD
+            driveBiasFront      = 0.0,
+            tractionMin         = 1.80,
+            tractionMax         = 2.05,
+            tractionLateral     = 20.0,
+            tractionBiasFront   = 0.485,
+            tractionLossMult    = 1.0,
+            lowSpeedTractionLoss = 0.8,
+            steeringLock        = 40.0,
+            handBrakeForce      = 1.0,
+            downforce           = 0.5,
+            camberStiffness     = 0.0,
         },
         assistStrength  = 0.65,
         assistAngleMin  = 8.0,
@@ -176,37 +177,35 @@ local PRESETS = {
         name            = 'Touge',
         desc            = 'Mountain pass | Quick transitions, tight lines',
         mult = {
-            tractionMin         = 0.72,
-            tractionMax         = 0.76,
-            tractionLateral     = 0.90,
-            tractionBiasFront   = 1.08,
-            tractionLossMult    = 1.50,
-            lowSpeedTractionLoss = 1.60,
-            driveForce          = 1.18,
+            driveForce          = 1.20,
             driveInertia        = 1.10,
             topSpeed            = 1.00,
-            steeringLock        = 1.30,
             brakeForce          = 0.90,
             brakeBiasFront      = 1.00,
-            handBrakeForce      = 1.50,
             suspForce           = 1.20,
             suspCompDamp        = 1.15,
             suspReboundDamp     = 1.20,
             suspUpperLimit      = 0.75,
             suspLowerLimit      = 0.85,
             suspBiasFront       = 0.97,
-            antiRollBar         = 0.72,
-            antiRollBiasFront   = 1.02,
-            downforce           = 0.40,
+            antiRollBar         = 0.70,
+            antiRollBiasFront   = 1.00,
             dragCoeff           = 0.85,
-            camberStiffness     = 0.65,
-            rollCenterFront     = 0.95,
-            rollCenterRear      = 0.90,
             mass                = 0.92,
             percentSubmerged    = 1.00,
         },
         set = {
             driveBiasFront      = 0.0,
+            tractionMin         = 1.50,
+            tractionMax         = 1.80,
+            tractionLateral     = 19.0,
+            tractionBiasFront   = 0.490,
+            tractionLossMult    = 1.2,
+            lowSpeedTractionLoss = 1.0,
+            steeringLock        = 45.0,
+            handBrakeForce      = 1.2,
+            downforce           = 0.3,
+            camberStiffness     = 0.0,
         },
         assistStrength  = 0.55,
         assistAngleMin  = 10.0,
@@ -218,37 +217,35 @@ local PRESETS = {
         name            = 'Tandem',
         desc            = 'Competitive | Smooth angle, proximity control',
         mult = {
-            tractionMin         = 0.62,
-            tractionMax         = 0.66,
-            tractionLateral     = 0.88,
-            tractionBiasFront   = 1.10,
-            tractionLossMult    = 1.65,
-            lowSpeedTractionLoss = 1.75,
-            driveForce          = 1.25,
+            driveForce          = 1.30,
             driveInertia        = 1.15,
             topSpeed            = 1.02,
-            steeringLock        = 1.40,
-            brakeForce          = 0.88,
+            brakeForce          = 0.85,
             brakeBiasFront      = 0.97,
-            handBrakeForce      = 1.65,
             suspForce           = 1.25,
             suspCompDamp        = 1.20,
             suspReboundDamp     = 1.25,
             suspUpperLimit      = 0.70,
             suspLowerLimit      = 0.80,
             suspBiasFront       = 0.95,
-            antiRollBar         = 0.60,
+            antiRollBar         = 0.55,
             antiRollBiasFront   = 1.00,
-            downforce           = 0.25,
             dragCoeff           = 0.80,
-            camberStiffness     = 0.55,
-            rollCenterFront     = 0.92,
-            rollCenterRear      = 0.88,
             mass                = 0.90,
             percentSubmerged    = 1.00,
         },
         set = {
             driveBiasFront      = 0.0,
+            tractionMin         = 1.20,
+            tractionMax         = 1.50,
+            tractionLateral     = 18.5,
+            tractionBiasFront   = 0.500,
+            tractionLossMult    = 1.4,
+            lowSpeedTractionLoss = 1.2,
+            steeringLock        = 50.0,
+            handBrakeForce      = 1.5,
+            downforce           = 0.1,
+            camberStiffness     = 0.0,
         },
         assistStrength  = 0.50,
         assistAngleMin  = 12.0,
@@ -260,37 +257,35 @@ local PRESETS = {
         name            = 'Missile',
         desc            = 'Advanced | High speed, big angle, raw power',
         mult = {
-            tractionMin         = 0.50,
-            tractionMax         = 0.55,
-            tractionLateral     = 0.82,
-            tractionBiasFront   = 1.14,
-            tractionLossMult    = 1.85,
-            lowSpeedTractionLoss = 2.00,
-            driveForce          = 1.40,
+            driveForce          = 1.45,
             driveInertia        = 1.20,
             topSpeed            = 1.05,
-            steeringLock        = 1.55,
-            brakeForce          = 0.82,
+            brakeForce          = 0.80,
             brakeBiasFront      = 0.93,
-            handBrakeForce      = 1.85,
             suspForce           = 1.30,
             suspCompDamp        = 1.25,
             suspReboundDamp     = 1.30,
             suspUpperLimit      = 0.65,
             suspLowerLimit      = 0.75,
             suspBiasFront       = 0.93,
-            antiRollBar         = 0.45,
+            antiRollBar         = 0.40,
             antiRollBiasFront   = 0.97,
-            downforce           = 0.15,
             dragCoeff           = 0.72,
-            camberStiffness     = 0.40,
-            rollCenterFront     = 0.88,
-            rollCenterRear      = 0.82,
             mass                = 0.87,
             percentSubmerged    = 1.00,
         },
         set = {
             driveBiasFront      = 0.0,
+            tractionMin         = 0.90,
+            tractionMax         = 1.20,
+            tractionLateral     = 18.0,
+            tractionBiasFront   = 0.520,
+            tractionLossMult    = 1.6,
+            lowSpeedTractionLoss = 1.5,
+            steeringLock        = 55.0,
+            handBrakeForce      = 1.8,
+            downforce           = 0.0,
+            camberStiffness     = 0.0,
         },
         assistStrength  = 0.40,
         assistAngleMin  = 12.0,
@@ -302,37 +297,35 @@ local PRESETS = {
         name            = 'Competition',
         desc            = 'Pro | FD/D1 style, max angle & commitment',
         mult = {
-            tractionMin         = 0.38,
-            tractionMax         = 0.44,
-            tractionLateral     = 0.78,
-            tractionBiasFront   = 1.18,
-            tractionLossMult    = 2.10,
-            lowSpeedTractionLoss = 2.30,
-            driveForce          = 1.55,
+            driveForce          = 1.60,
             driveInertia        = 1.25,
             topSpeed            = 1.08,
-            steeringLock        = 1.70,
-            brakeForce          = 0.78,
+            brakeForce          = 0.75,
             brakeBiasFront      = 0.90,
-            handBrakeForce      = 2.10,
             suspForce           = 1.35,
             suspCompDamp        = 1.30,
             suspReboundDamp     = 1.35,
             suspUpperLimit      = 0.60,
             suspLowerLimit      = 0.70,
             suspBiasFront       = 0.90,
-            antiRollBar         = 0.35,
+            antiRollBar         = 0.30,
             antiRollBiasFront   = 0.95,
-            downforce           = 0.05,
             dragCoeff           = 0.65,
-            camberStiffness     = 0.30,
-            rollCenterFront     = 0.85,
-            rollCenterRear      = 0.78,
             mass                = 0.85,
             percentSubmerged    = 1.00,
         },
         set = {
             driveBiasFront      = 0.0,
+            tractionMin         = 0.65,
+            tractionMax         = 0.95,
+            tractionLateral     = 17.0,
+            tractionBiasFront   = 0.540,
+            tractionLossMult    = 1.9,
+            lowSpeedTractionLoss = 1.8,
+            steeringLock        = 62.0,
+            handBrakeForce      = 2.2,
+            downforce           = 0.0,
+            camberStiffness     = 0.0,
         },
         assistStrength  = 0.30,
         assistAngleMin  = 15.0,
@@ -344,37 +337,35 @@ local PRESETS = {
         name            = 'Gymkhana',
         desc            = 'Freestyle | Huge angle, donuts, trick lines',
         mult = {
-            tractionMin         = 0.28,
-            tractionMax         = 0.35,
-            tractionLateral     = 0.72,
-            tractionBiasFront   = 1.22,
-            tractionLossMult    = 2.50,
-            lowSpeedTractionLoss = 2.80,
-            driveForce          = 1.70,
+            driveForce          = 1.75,
             driveInertia        = 1.35,
-            topSpeed            = 0.90,     -- cap top speed for control
-            steeringLock        = 1.90,     -- massive steering angle
-            brakeForce          = 0.75,
+            topSpeed            = 0.90,
+            brakeForce          = 0.70,
             brakeBiasFront      = 0.88,
-            handBrakeForce      = 2.50,
             suspForce           = 1.40,
             suspCompDamp        = 1.35,
             suspReboundDamp     = 1.40,
             suspUpperLimit      = 0.55,
             suspLowerLimit      = 0.65,
             suspBiasFront       = 0.88,
-            antiRollBar         = 0.25,
+            antiRollBar         = 0.20,
             antiRollBiasFront   = 0.93,
             dragCoeff           = 0.60,
-            camberStiffness     = 0.20,
-            rollCenterFront     = 0.80,
-            rollCenterRear      = 0.72,
             mass                = 0.82,
             percentSubmerged    = 1.00,
         },
         set = {
             driveBiasFront      = 0.0,
-            downforce           = 0.0,      -- force to zero (not multiplied)
+            tractionMin         = 0.40,
+            tractionMax         = 0.70,
+            tractionLateral     = 16.0,
+            tractionBiasFront   = 0.560,
+            tractionLossMult    = 2.2,
+            lowSpeedTractionLoss = 2.0,
+            steeringLock        = 70.0,
+            handBrakeForce      = 3.0,
+            downforce           = 0.0,
+            camberStiffness     = 0.0,
         },
         assistStrength  = 0.25,
         assistAngleMin  = 8.0,
@@ -571,7 +562,6 @@ local angleTrackEnabled     = true
 local throttleModEnabled    = true
 local handbrakeBoostEnabled = true
 local autoApplyEnabled      = true
-local driftCameraEnabled    = false
 local backfireEnabled       = true
 local angleSmokeColorEnabled = false   -- angle-based smoke color mode
 local useKMH                = false    -- false = MPH, true = KM/H
@@ -1179,26 +1169,6 @@ local function doHandbrakeBoost(vehicle)
     end
 end
 
--- ============================================================
--- DRIFT CAMERA
--- ============================================================
-
-local function updateDriftCamera(vehicle)
-    if not driftCameraEnabled or not driftActive then return end
-
-    local absAngle = math.abs(currentAngle)
-    local speed = invoker.call(N.GET_ENTITY_SPEED, vehicle).float
-
-    if absAngle > 10.0 and speed > 5.0 then
-        -- Lock camera to closest zoom for a tighter chase feel
-        invoker.call(N.SET_FOLLOW_VEHICLE_CAM_ZOOM_LEVEL, 0)
-
-        -- Offset camera heading slightly towards the drift direction
-        -- This creates a looser, more cinematic follow
-        local headingOffset = clamp(currentAngle * 0.08, -6.0, 6.0)
-        invoker.call(N.SET_GAMEPLAY_CAM_RELATIVE_HEADING, headingOffset)
-    end
-end
 
 -- ============================================================
 -- BACKFIRE / ANTI-LAG POPS
@@ -2333,12 +2303,6 @@ visualMenu:toggle('Backfire / Anti-Lag')
         notify.push('MikzDrift', 'Backfire: ' .. (opt.value and 'ON' or 'OFF'))
     end)
 
-visualMenu:toggle('Drift Camera')
-    :tooltip('Wider FOV during drifts for a cinematic feel')
-    :event(menu.event.click, function(opt)
-        driftCameraEnabled = opt.value
-        notify.push('MikzDrift', 'Drift camera: ' .. (opt.value and 'ON' or 'OFF'))
-    end)
 
 -- ---- Ghost Replay submenu ----
 local ghostMenu = driftMenu:submenu('Ghost Replay')
@@ -2570,7 +2534,6 @@ util.create_thread(function()
                 doBackfire(vehicle)
                 updateTireWear(vehicle)
                 updateTireSmoke(vehicle)
-                updateDriftCamera(vehicle)
 
                 -- Ghost recording (record while drifting)
                 ghostRecordFrame(vehicle)

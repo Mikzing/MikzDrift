@@ -110,8 +110,8 @@ local HANDLING_FIELDS = {
 -- Presets use ABSOLUTE set{} values for critical drift fields (traction,
 -- steering, handbrake) since multipliers don't work well — a car with
 -- stock traction 2.5 * 0.85 = 2.125 is still way too grippy to slide.
--- FiveM drift servers use absolute values for these fields. Multipliers
--- are kept for fields where scaling makes sense (suspension, mass, etc).
+-- FiveM drift servers use absolute values for these fields. Multipliers are
+-- kept only for powertrain fields, whose stock ranges differ wildly per car.
 
 local PRESETS = {
     -- 1) STREET — beginner-friendly, stable slides, forgiving
@@ -551,6 +551,56 @@ local function saveHandling(vehicle)
         saved[e.key] = invoker.call(N.GET_VEHICLE_HANDLING_FLOAT, vehicle, joaat('CHandlingData'), joaat(e.field)).float
     end
     return saved
+end
+
+local function getCarOffsets(vehicle)
+    local hash = invoker.call(N.GET_ENTITY_MODEL, vehicle).int
+    if hash and carTuningOffsets[hash] then
+        return carTuningOffsets[hash]
+    end
+    return nil
+end
+
+-- Safe bounds per key so an offset can never push a value somewhere the
+-- physics engine misbehaves (negative grip, zero-degree steering, etc.)
+-- Powertrain fields are multiplier-based and their absolute ranges differ
+-- wildly per vehicle, so they are deliberately left unclamped.
+local OFFSET_CLAMPS = {
+    tractionMin          = { 0.10, 3.00 },
+    tractionMax          = { 0.15, 3.20 },
+    tractionBiasFront    = { 0.35, 0.70 },
+    tractionLossMult     = { 0.10, 4.00 },
+    lowSpeedTractionLoss = { 0.10, 4.00 },
+    steeringLock         = { 20.0, 90.0 },
+    handBrakeForce       = { 0.10, 5.00 },
+    driveBiasFront       = { 0.00, 1.00 },
+}
+
+-- Resolve the absolute handling value that should end up on the car for a
+-- given key: the preset value, plus this car's tuning offset, clamped.
+-- Returns nil if the preset does not touch that field.
+-- Absolute (`set`) fields take the offset directly; multiplier (`mult`)
+-- fields take it on the multiplier, so both sliders read as labelled.
+local function effectiveHandlingValue(preset, key, vehicle)
+    if not preset then return nil end
+
+    local offsets = vehicle and getCarOffsets(vehicle) or nil
+    local offset = (offsets and offsets[key]) or 0.0
+
+    local value
+    if preset.set and preset.set[key] ~= nil then
+        value = preset.set[key] + offset
+    elseif originalHandling and preset.mult and preset.mult[key] and originalHandling[key] then
+        value = originalHandling[key] * (preset.mult[key] + offset)
+    else
+        return nil
+    end
+
+    local clamp = OFFSET_CLAMPS[key]
+    if clamp then
+        value = math.max(clamp[1], math.min(clamp[2], value))
+    end
+    return value
 end
 
 -- Apply a drift preset using multipliers against the car's stock handling.
@@ -1298,20 +1348,19 @@ local function updateTireWear(vehicle)
         tireWearAmount = math.min(1.0, tireWearAmount)
     end
 
-    -- Apply wear: reduce traction proportionally to wear
-    if originalHandling and originalHandling.tractionMin then
-        local preset = PRESETS[currentPreset]
-        local baseMult = preset.mult and preset.mult.tractionMin or 1.0
-        local wornMult = baseMult * tireWearAmount
-        local stockVal = originalHandling.tractionMin
+    -- Apply wear: scale the traction the car is *currently* set up with, i.e.
+    -- preset value plus this car's tuning offset. Starting anywhere else (a
+    -- bare multiplier off stock) would silently restore stock grip every tick.
+    local preset = PRESETS[currentPreset]
+    local baseMin = effectiveHandlingValue(preset, 'tractionMin', vehicle)
+    local baseMax = effectiveHandlingValue(preset, 'tractionMax', vehicle)
+    if baseMin then
         invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
-            joaat('CHandlingData'), joaat('fTractionCurveMin'), stockVal * wornMult)
-
-        local baseMax = preset.mult and preset.mult.tractionMax or 1.0
-        local wornMax = baseMax * tireWearAmount
-        local stockMax = originalHandling.tractionMax
+            joaat('CHandlingData'), joaat('fTractionCurveMin'), baseMin * tireWearAmount)
+    end
+    if baseMax then
         invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
-            joaat('CHandlingData'), joaat('fTractionCurveMax'), stockMax * wornMax)
+            joaat('CHandlingData'), joaat('fTractionCurveMax'), baseMax * tireWearAmount)
     end
 end
 
@@ -1388,14 +1437,8 @@ end
 -- ============================================================
 -- PER-CAR TUNING OFFSETS
 -- ============================================================
-
-local function getCarOffsets(vehicle)
-    local hash = invoker.call(N.GET_ENTITY_MODEL, vehicle).int
-    if hash and carTuningOffsets[hash] then
-        return carTuningOffsets[hash]
-    end
-    return nil
-end
+-- getCarOffsets, OFFSET_CLAMPS and effectiveHandlingValue live near the top
+-- of the file because tire wear needs them too.
 
 local function setCarOffset(vehicle, key, value)
     local hash = invoker.call(N.GET_ENTITY_MODEL, vehicle).int
@@ -1413,12 +1456,8 @@ local function clearCarOffsets(vehicle)
     end
 end
 
--- Apply per-car offsets on top of current handling
--- Offsets are ADDITIVE to the multiplier (e.g. offset +0.05 on tractionMin
--- means the final multiplier is preset_mult + 0.05)
+-- Re-write every offset field for this car on top of the active preset
 local function applyCarOffsets(vehicle)
-    if not originalHandling then return end
-
     local offsets = getCarOffsets(vehicle)
     if not offsets then return end
 
@@ -1426,21 +1465,10 @@ local function applyCarOffsets(vehicle)
     for _, e in ipairs(HANDLING_FIELDS) do
         local offset = offsets[e.key]
         if offset and offset ~= 0 then
-            local stockVal = originalHandling[e.key]
-            if stockVal then
-                -- Start from preset value
-                local baseMult = 1.0
-                if preset.set and preset.set[e.key] ~= nil then
-                    -- For set values, offset adjusts the absolute value directly
-                    local baseVal = preset.set[e.key]
-                    invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
-                        joaat('CHandlingData'), joaat(e.field), baseVal + offset)
-                elseif preset.mult and preset.mult[e.key] then
-                    baseMult = preset.mult[e.key]
-                    local finalMult = baseMult + offset
-                    invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
-                        joaat('CHandlingData'), joaat(e.field), stockVal * finalMult)
-                end
+            local final = effectiveHandlingValue(preset, e.key, vehicle)
+            if final then
+                invoker.call(N.SET_VEHICLE_HANDLING_FLOAT, vehicle,
+                    joaat('CHandlingData'), joaat(e.field), final)
             end
         end
     end
@@ -1723,16 +1751,30 @@ local editPreset = {
     assistStrength  = 0.50,
     assistAngleMin  = 10.0,
     assistAngleMax  = 80.0,
+    -- Drift-critical fields are absolute (multipliers off stock are far too
+    -- grippy to ever break traction); only powertrain stays relative.
     mult = {
-        tractionMin         = 0.70,
-        tractionMax         = 0.75,
         driveForce          = 1.20,
         driveInertia        = 1.10,
         topSpeed            = 1.00,
     },
     set = {
         driveBiasFront      = 0.0,
+        tractionMin         = 1.20,
+        tractionMax         = 1.50,
+        tractionBiasFront   = 0.500,
+        tractionLossMult    = 1.4,
+        lowSpeedTractionLoss = 1.2,
+        steeringLock        = 50.0,
+        handBrakeForce      = 1.5,
     },
+}
+
+-- Keys the custom builder writes as absolute values into editPreset.set
+local ABSOLUTE_KEYS = {
+    tractionMin = true, tractionMax = true, tractionBiasFront = true,
+    tractionLossMult = true, lowSpeedTractionLoss = true,
+    steeringLock = true, handBrakeForce = true, driveBiasFront = true,
 }
 
 -- ---- Create / Edit submenu ----
@@ -1741,22 +1783,22 @@ local createMenu = customMenu:submenu('Create New Preset')
 -- Slider definitions: { label, key, min, max, step, tooltip }
 local SLIDER_DEFS = {
     { 'Traction',           {
-        { 'Traction Min',           'tractionMin',          0.10, 1.50, 0.01, 'Rear grip (lower = more slide)' },
-        { 'Traction Max',           'tractionMax',          0.10, 1.50, 0.01, 'Peak grip multiplier' },
-        { 'Traction Bias Front',    'tractionBiasFront',    0.90, 1.30, 0.01, 'Front grip bias (higher = more front grip, rear slides easier)' },
+        { 'Traction Min',           'tractionMin',          0.20, 2.40, 0.05, 'Rear grip, absolute (lower = more slide). Stock cars sit near 2.0' },
+        { 'Traction Max',           'tractionMax',          0.30, 2.60, 0.05, 'Peak grip, absolute. Keep ~0.3 above Traction Min' },
+        { 'Traction Bias Front',    'tractionBiasFront',    0.440, 0.600, 0.005, 'Grip split. Above 0.50 = rear slides out easier' },
         { 'Traction Loss',          'tractionLossMult',     0.50, 3.00, 0.05, 'How fast grip is lost (higher = more slide)' },
-        { 'Low Speed Traction Loss','lowSpeedTractionLoss', 0.50, 3.00, 0.05, 'Grip loss at low speed' },
+        { 'Low Speed Traction Loss','lowSpeedTractionLoss', 0.50, 3.00, 0.05, 'Grip loss at low speed (helps initiate slow corners)' },
     }},
     { 'Drivetrain',         {
-        { 'Drive Force',            'driveForce',           0.50, 2.50, 0.05, 'Engine power multiplier' },
-        { 'Drive Inertia',          'driveInertia',         0.50, 2.00, 0.05, 'Drivetrain responsiveness' },
-        { 'Top Speed',              'topSpeed',             0.50, 1.50, 0.01, 'Top speed multiplier' },
+        { 'Drive Force',            'driveForce',           0.50, 2.50, 0.05, 'Engine power multiplier (relative to stock)' },
+        { 'Drive Inertia',          'driveInertia',         0.50, 2.00, 0.05, 'Drivetrain responsiveness (relative to stock)' },
+        { 'Top Speed',              'topSpeed',             0.50, 1.50, 0.01, 'Top speed multiplier (relative to stock)' },
     }},
     { 'Steering',           {
-        { 'Steering Lock',          'steeringLock',         1.00, 2.50, 0.05, 'Max steering angle (higher = more angle)' },
+        { 'Steering Lock',          'steeringLock',         30.0, 80.0, 1.0, 'Max steering angle in degrees (higher = more counter-steer range)' },
     }},
     { 'Brakes',             {
-        { 'Handbrake Force',        'handBrakeForce',       0.50, 3.00, 0.05, 'Handbrake strength for initiating' },
+        { 'Handbrake Force',        'handBrakeForce',       0.50, 3.50, 0.05, 'Handbrake strength, absolute (for initiating)' },
     }},
     { 'Assist',             {
         { 'Counter-Steer Strength', 'assistStrength',       0.00, 1.00, 0.05, 'Controller counter-steer assist strength' },
@@ -1764,6 +1806,9 @@ local SLIDER_DEFS = {
         { 'Assist Angle Max',       'assistAngleMax',       50.0, 150.0, 5.0, 'Max drift angle where assist still works' },
     }},
 }
+
+-- Declared before the slider loop so slider handlers can see it
+local livePreview = false
 
 -- Build slider sub-menus for each category
 for _, category in ipairs(SLIDER_DEFS) do
@@ -1775,43 +1820,43 @@ for _, category in ipairs(SLIDER_DEFS) do
         local label, key, sMin, sMax, step, tip = slider[1], slider[2], slider[3], slider[4], slider[5], slider[6]
 
         -- Determine which table to read/write
-        -- Keys that live on editPreset root (not in .mult)
+        -- Keys that live on editPreset root (not in .mult / .set)
         local isRootKey = (key == 'assistStrength' or key == 'assistAngleMin' or key == 'assistAngleMax')
+        local isAbsKey  = ABSOLUTE_KEYS[key] or false
 
         -- Calculate integer range for slider (Lexis uses integer sliders)
         local steps = math.floor((sMax - sMin) / step + 0.5)
-        local defaultIdx = 0
-        if isRootKey then
-            defaultIdx = math.floor(((editPreset[key] or sMin) - sMin) / step + 0.5)
-        else
-            defaultIdx = math.floor(((editPreset.mult[key] or 1.0) - sMin) / step + 0.5)
-        end
-        defaultIdx = math.max(0, math.min(steps, defaultIdx))
 
         -- Build value list for combo selector
+        local fmt = (step < 0.01) and '%.3f' or '%.2f'
         local valList = {}
         for vi = 0, steps do
             local v = sMin + vi * step
             v = math.floor(v * 10000 + 0.5) / 10000
-            valList[vi + 1] = { string.format('%.2f', v), vi }
+            valList[vi + 1] = { string.format(fmt, v), vi }
         end
 
         catMenu:combo_int(label, valList, menu.type.scroll)
-            :tooltip(tip .. string.format(' (%.2f - %.2f)', sMin, sMax))
+            :tooltip(tip .. string.format(' (' .. fmt .. ' - ' .. fmt .. ')', sMin, sMax))
             :event(menu.event.click, function(opt)
                 local val = sMin + opt.list:at(opt.value).value * step
                 val = math.floor(val * 10000 + 0.5) / 10000
                 if isRootKey then
                     editPreset[key] = val
+                elseif isAbsKey then
+                    editPreset.set[key] = val
                 else
                     editPreset.mult[key] = val
+                end
+                if livePreview then
+                    local veh = getPlayerVehicle()
+                    if veh and driftActive then applyDriftPreset(veh, editPreset) end
                 end
             end)
     end
 end
 
 -- Live preview toggle
-local livePreview = false
 createMenu:toggle('Live Preview')
     :tooltip('Apply changes in real-time while tuning (must be in vehicle with drift enabled)')
     :event(menu.event.click, function(opt)
@@ -2082,7 +2127,16 @@ assistMenu:toggle('Tire Wear')
     :tooltip('Tires lose grip the longer you drift, recover when driving straight')
     :event(menu.event.click, function(opt)
         tireWearEnabled = opt.value
-        if not opt.value then tireWearAmount = 1.0 end
+        if not opt.value then
+            tireWearAmount = 1.0
+            -- Undo any grip already worn off, otherwise the car keeps the last
+            -- worn traction value forever.
+            local vehicle = getPlayerVehicle()
+            if vehicle and driftActive then
+                applyDriftPreset(vehicle, PRESETS[currentPreset])
+                applyCarOffsets(vehicle)
+            end
+        end
         notify.push('MikzDrift', 'Tire wear: ' .. (opt.value and 'ON' or 'OFF'))
     end)
 
@@ -2193,29 +2247,30 @@ local offsetMenu = driftMenu:submenu('Per-Car Tuning')
 
 -- Offset slider defs: { label, key, min, max, step, tooltip }
 local OFFSET_SLIDERS = {
-    { 'Traction Min',       'tractionMin',          -0.30, 0.30, 0.01, 'Grip offset (+ = more grip)' },
-    { 'Traction Max',       'tractionMax',          -0.30, 0.30, 0.01, 'Peak grip offset' },
-    { 'Traction Loss',      'tractionLossMult',     -0.50, 0.50, 0.05, 'Traction loss offset' },
-    { 'Drive Force',        'driveForce',           -0.30, 0.30, 0.05, 'Power offset' },
-    { 'Steering Lock',      'steeringLock',         -0.30, 0.30, 0.05, 'Steering angle offset' },
-    { 'Handbrake Force',    'handBrakeForce',       -0.50, 0.50, 0.05, 'Handbrake offset' },
+    { 'Traction Min',       'tractionMin',          -0.60, 0.60, 0.05, 'Rear grip offset (- = slides more)' },
+    { 'Traction Max',       'tractionMax',          -0.60, 0.60, 0.05, 'Peak grip offset' },
+    { 'Traction Bias Front','tractionBiasFront',    -0.060, 0.060, 0.005, 'Grip split offset (+ = rear slides out more)' },
+    { 'Traction Loss',      'tractionLossMult',     -0.50, 0.50, 0.05, 'Traction loss offset (+ = slides more)' },
+    { 'Drive Force',        'driveForce',           -0.30, 0.30, 0.05, 'Power offset (multiplier)' },
+    { 'Steering Lock',      'steeringLock',         -15.0, 15.0, 1.0, 'Steering angle offset in degrees' },
+    { 'Handbrake Force',    'handBrakeForce',       -0.80, 0.80, 0.05, 'Handbrake offset' },
 }
 
 for _, slider in ipairs(OFFSET_SLIDERS) do
     local label, key, sMin, sMax, step, tip = slider[1], slider[2], slider[3], slider[4], slider[5], slider[6]
     local steps = math.floor((sMax - sMin) / step + 0.5)
-    local centerIdx = math.floor((0 - sMin) / step + 0.5) -- 0 = no offset
+    local offFmt = (step < 0.01) and '%+.3f' or '%+.2f'
 
     -- Build value list for combo selector
     local offsetValList = {}
     for oi = 0, steps do
         local v = sMin + oi * step
         v = math.floor(v * 10000 + 0.5) / 10000
-        offsetValList[oi + 1] = { string.format('%+.2f', v), oi }
+        offsetValList[oi + 1] = { string.format(offFmt, v), oi }
     end
 
     offsetMenu:combo_int(label, offsetValList, menu.type.scroll)
-        :tooltip(tip .. string.format(' (%.2f to +%.2f)', sMin, sMax))
+        :tooltip(tip .. string.format(' (' .. offFmt .. ' to ' .. offFmt .. ')', sMin, sMax))
         :event(menu.event.click, function(opt)
             local val = sMin + opt.list:at(opt.value).value * step
             val = math.floor(val * 10000 + 0.5) / 10000
